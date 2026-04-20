@@ -1,0 +1,85 @@
+"""Tests for Skill Engine."""
+
+from unittest.mock import patch
+
+import pytest
+
+from aipet.gateway.skills.registry import SkillRegistry
+from aipet.gateway.skills.router import ToolRouter
+from aipet.gateway.skills.sandbox import (
+    SandboxViolationError,
+    check_permissions,
+    require_permission,
+)
+
+
+@pytest.mark.asyncio
+async def test_tool_router_executes_tool() -> None:
+    registry = SkillRegistry()
+    registry._skills = {}
+    router = ToolRouter(registry)
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    from aipet.gateway.skills.registry import SkillInfo
+
+    registry._skills["math"] = SkillInfo("math", "Math ops", "Math skill", [], {"add": add})
+
+    result = await router.call("math:add", {"a": 1, "b": 2})
+    assert result == "3"
+
+
+@pytest.mark.asyncio
+async def test_tool_router_returns_error_for_missing_tool() -> None:
+    registry = SkillRegistry()
+    router = ToolRouter(registry)
+    result = await router.call("missing:tool", {})
+    assert "not found" in result
+
+
+def test_sandbox_permission_decorator() -> None:
+    @require_permission("network")
+    def fetch() -> str:
+        return "ok"
+
+    check_permissions(fetch, ["network"])
+    with pytest.raises(SandboxViolationError):
+        check_permissions(fetch, [])
+
+
+def test_parse_skill_md() -> None:
+    registry = SkillRegistry()
+    content = """
+# Demo Skill
+
+## Description
+A demo skill.
+
+## Permissions
+- network
+- filesystem
+
+## Tools
+- `do_something()`
+"""
+    desc, brief, perms = registry._parse_skill_md(content)
+    assert desc == "A demo skill."
+    assert perms == ["network", "filesystem"]
+
+
+def test_skill_registry_ensures_builtins(tmp_path: pytest.TempPathFactory) -> None:
+    registry = SkillRegistry()
+    with patch.object(registry, "BUILTINS_DIR", tmp_path / "builtins"):
+        (tmp_path / "builtins").mkdir()
+        (tmp_path / "builtins" / "weather").mkdir()
+        (tmp_path / "builtins" / "weather" / "SKILL.md").write_text("# W", encoding="utf-8")
+        (tmp_path / "builtins" / "weather" / "__init__.py").write_text(
+            "tools = {}", encoding="utf-8"
+        )
+
+        skills_dir = tmp_path / "skills"
+        registry._ensure_builtin_skills(skills_dir)
+
+        assert (skills_dir / "weather" / "SKILL.md").exists()
+        assert (skills_dir / "weather" / "__init__.py").exists()

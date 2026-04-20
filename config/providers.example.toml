@@ -1,0 +1,11 @@
+current_provider_id = "openai"
+current_model = "gpt-4o"
+
+[[providers]]
+id = "openai"
+name = "OpenAI"
+type = "openai"
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+base_url = "https://api.openai.com/v1"
+models = ["gpt-4o", "gpt-4o-mini"]
+is_custom = true

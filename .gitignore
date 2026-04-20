@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# User data (local-first app) - now inside project directory
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Live2D models and cache (user assets)
+models/
+cache/
+*.model3.json
+*.moc3
+# Model textures are large binary files (~200MB+), do not track in git
+live2dmodels/**/*.png
+live2dmodels/**/*.jpg
+live2dmodels/**/*.jpeg
+
+# Config files with sensitive credentials
+config/gateway.toml
+config/providers.toml
+
+# PyInstaller
+*.spec
+*.manifest
+*.exe
+
+# Backup files
+*.bak
+*.backup
+*copy*.py
+debug_*.py
+fix_*.py
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json

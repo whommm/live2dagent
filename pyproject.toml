@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aipet"
+version = "2.0.0a1"
+description = "AIPet v2.0 - Your personal AI desktop companion with Live2D"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+authors = [
+    {name = "AIPet Team"},
+]
+keywords = ["ai", "desktop-pet", "live2d", "companion"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "websockets>=12.0",
+    "httpx>=0.27",
+    "aiosqlite>=0.20",
+    "structlog>=24.0",
+    "toml>=0.10.2",
+]
+
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.6",
+    "qasync>=0.27",
+    "live2d-py>=0.5.3",
+]
+ai = [
+    "google-genai>=1.0",
+    "openai>=1.30",
+    "anthropic>=0.28",
+]
+audio = [
+    "edge-tts>=6.1",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+]
+asr = [
+    "faster-whisper>=1.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+gui-dev = [
+    "pytest-qt>=4.2",
+]
+all = [
+    "aipet[gui,ai,audio,asr,dev]",
+]
+
+[project.scripts]
+aipet-gateway = "aipet.gateway.server:main"
+aipet-frontend = "aipet.frontend.app:main"
+aipet = "aipet.launcher:main"
+
+[project.urls]
+Homepage = "https://github.com/aipet/aipet"
+Documentation = "https://github.com/aipet/aipet/blob/main/docs/ARCHITECTURE.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "N802", # Qt override methods (mousePressEvent, paintGL, etc.)
+    "N806", # Win32 API constants (GWL_EXSTYLE, WS_EX_TRANSPARENT, etc.)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/aipet/frontend/**/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "sounddevice",
+    "soundfile",
+    "qasync",
+    "toml",
+    "google.generativeai",
+    "edge_tts",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
