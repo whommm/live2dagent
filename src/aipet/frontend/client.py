@@ -5,15 +5,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
 
+import structlog
 import websockets
 from websockets import ClientConnection
 
-_logger = logging.getLogger("aipet.frontend.client")
+_logger = structlog.get_logger("aipet.frontend.client")
 
 
 class GatewayClient:
