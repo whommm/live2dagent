@@ -11,10 +11,12 @@ from qasync import QEventLoop
 
 from aipet.frontend.client import GatewayClient
 from aipet.frontend.pet_window import PetWindow
+from aipet.utils.log import configure_logging
 
 
 def main() -> int:
     """Run the PyQt Frontend with asyncio integration."""
+    configure_logging("INFO", log_to_file=True, log_to_console=True)
     app = QApplication(sys.argv)
     app.setApplicationName("AIPet")
     app.setApplicationVersion("2.0.0a1")

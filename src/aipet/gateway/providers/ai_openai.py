@@ -7,9 +7,13 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import logging
+
 import httpx
 
 from aipet.gateway.providers.ai import Chunk, Message, Tool
+
+_logger = logging.getLogger("aipet.gateway.providers.ai_openai")
 
 
 class OpenAIProvider:
@@ -180,8 +184,8 @@ class OpenAIProvider:
                     try:
                         body = await exc.response.aread()
                         decoded = body.decode('utf-8', errors='replace')
-                        print(f"[OpenAIProvider] 400 error (attempt {attempt + 1}): {decoded}")
-                        print(f"[OpenAIProvider] Payload was: {payload}")
+                        _logger.warning("400 error", attempt=attempt + 1, response=decoded)
+                        _logger.debug("Payload", payload=payload)
                     except Exception:
                         pass
                     continue

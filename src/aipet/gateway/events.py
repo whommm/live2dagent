@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
+
+_logger = logging.getLogger("aipet.gateway.events")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -50,8 +53,7 @@ class EventBus:
         )
         for result in results:
             if isinstance(result, Exception):
-                # In production this should go through structured logging
-                print(f"EventBus handler error: {result}")
+                _logger.exception("EventBus handler error", exc_info=result)
 
     def clear(self) -> None:
         """Remove all subscriptions."""

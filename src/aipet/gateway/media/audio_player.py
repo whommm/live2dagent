@@ -85,4 +85,4 @@ class AudioPlayer:
             sd.play(data, samplerate)
             sd.wait()
         except Exception as exc:
-            print(f"Audio playback error: {exc}")
+            _logger.exception("Audio playback error")

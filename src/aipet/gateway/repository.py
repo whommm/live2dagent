@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import aiosqlite
+
+_logger = logging.getLogger("aipet.gateway.repository")
 
 from aipet.gateway.models import Message, Session
 from aipet.utils.paths import get_user_data_dir
@@ -166,7 +169,7 @@ class ChatRepository:
                 parent.rmdir()
             return True
         except Exception as exc:
-            print(f"[ChatRepository] Failed to delete session DB: {exc}")
+            _logger.exception("Failed to delete session DB")
             return False
 
     async def rename_session(self, name: str) -> bool:
@@ -180,7 +183,7 @@ class ChatRepository:
                 await db.commit()
             return True
         except Exception as exc:
-            print(f"[ChatRepository] Failed to rename session: {exc}")
+            _logger.exception("Failed to rename session")
             return False
 
     async def clear_messages(self) -> bool:
@@ -194,7 +197,7 @@ class ChatRepository:
                 await db.commit()
             return True
         except Exception as exc:
-            print(f"[ChatRepository] Failed to clear messages: {exc}")
+            _logger.exception("Failed to clear messages")
             return False
 
     async def list_all_session_ids(self) -> list[str]:

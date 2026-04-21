@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
 
 import websockets
 from websockets import ClientConnection
+
+_logger = logging.getLogger("aipet.frontend.client")
 
 
 class GatewayClient:
@@ -90,7 +93,7 @@ class GatewayClient:
         try:
             task.result()
         except Exception as exc:
-            print(f"[GatewayClient] Read loop terminated unexpectedly: {exc}")
+            _logger.exception("Read loop terminated unexpectedly")
         self._running = False
 
     async def _read_loop(self) -> None:
@@ -117,9 +120,9 @@ class GatewayClient:
                     try:
                         handler(data.get("payload", {}))
                     except Exception as exc:
-                        print(f"GatewayClient handler error: {exc}")
+                        _logger.exception("Handler error")
         except websockets.exceptions.ConnectionClosed:
             self._running = False
         except Exception as exc:
-            print(f"[GatewayClient] Read loop error: {exc}")
+            _logger.exception("Read loop error")
             self._running = False
