@@ -684,9 +684,6 @@ class PetWindow(QWidget):
                 self.chat_window.show()
                 self.chat_window.raise_()
                 self.chat_window.activateWindow()
-                # Keep the edge trigger above the chat window so it stays clickable
-                if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-                    self._chat_trigger.raise_()
                 return
             except RuntimeError:
                 self.chat_window = None
@@ -698,16 +695,10 @@ class PetWindow(QWidget):
         self.chat_window.show()
         self.chat_window.raise_()
         self.chat_window.activateWindow()
-        # Keep the edge trigger above the chat window so it stays clickable
-        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-            self._chat_trigger.raise_()
 
     def _on_chat_window_closed(self) -> None:
         # Window is hidden, not destroyed; keep reference for state preservation
-        # Bring the edge trigger back to the top so it doesn't get buried.
-        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-            self._chat_trigger.show()
-            self._chat_trigger.raise_()
+        pass
 
     def _show_provider_dialog(self) -> None:
         if self._provider_dialog is not None:
@@ -738,13 +729,9 @@ class PetWindow(QWidget):
         if self.isVisible():
             self.hide()
             self._passthrough_timer.stop()
-            if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-                self._chat_trigger.hide()
         else:
             self.show()
             self._passthrough_timer.start(50)
-            if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-                self._chat_trigger.show()
 
     def _quit(self) -> None:
         # Show quit overlay for a brief moment before actual quit
@@ -763,10 +750,6 @@ class PetWindow(QWidget):
         if hasattr(self, "_passthrough_timer") and self._passthrough_timer is not None:
             self._passthrough_timer.stop()
         self.live2d_widget.cleanup()
-        # Destroy edge trigger button
-        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
-            self._chat_trigger.deleteLater()
-            self._chat_trigger = None
         # Actually close chat window on app quit
         if self.chat_window is not None:
             try:
@@ -808,13 +791,22 @@ class PetWindow(QWidget):
         self._passthrough_timer.start(50)
 
     def _update_win32_passthrough(self) -> None:
-        """Toggle WS_EX_TRANSPARENT based on whether cursor is over the model."""
+        """Toggle WS_EX_TRANSPARENT based on whether cursor is over the model or trigger button."""
         if sys.platform != "win32" or not self.isVisible():
             return
         if self.live2d_widget.is_dragging:
             self._set_window_transparent(False)
             return
         cursor_pos = QCursor.pos()
+        # If the cursor is over the chat trigger button, disable passthrough
+        # so the button can receive hover and click events.
+        if (
+            hasattr(self, "_chat_trigger")
+            and self._chat_trigger is not None
+            and self._chat_trigger.hit_test_global(cursor_pos)
+        ):
+            self._set_window_transparent(False)
+            return
         local_pos = self.live2d_widget.mapFromGlobal(cursor_pos)
         hit = self.live2d_widget.hit_test(local_pos.x(), local_pos.y())
         self._set_window_transparent(not hit)
