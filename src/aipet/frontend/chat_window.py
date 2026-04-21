@@ -843,7 +843,9 @@ class ChatWindow(QWidget):
     def _setup_ui(self) -> None:
         self.setWindowTitle("Chat with AIPet")
         self.resize(900, 720)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        )
         self.setStyleSheet(f"background-color: {MaterialTheme.surface};")
 
         root_layout = QHBoxLayout(self)
