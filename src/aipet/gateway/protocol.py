@@ -105,6 +105,32 @@ class Live2DMotionEvent(BaseModel):
     priority: int = 3
 
 
+class Live2DPoseEvent(BaseModel):
+    pose: str
+    duration_ms: int = 500
+
+
+class Live2DEmotionEvent(BaseModel):
+    emotion: str
+    duration_ms: int = 500
+
+
+class Live2DPropEvent(BaseModel):
+    prop: str
+    duration_ms: int = 500
+
+
+class Live2DStateReport(BaseModel):
+    """Frontend -> Gateway: current model state snapshot."""
+
+    pose: str = "look_at_user"
+    pose_description: str = ""
+    emotion: str = "calm"
+    emotion_description: str = ""
+    props: list[str] = Field(default_factory=list)
+    props_description: str = ""
+
+
 class CanvasShowEvent(BaseModel):
     canvas_id: str
     canvas_type: str

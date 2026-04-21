@@ -45,6 +45,7 @@ class Gateway:
         self._lock = asyncio.Lock()
         self._live2d_tags = self._scan_live2d_tags()
         self._last_user_activity = time.time()
+        self._live2d_state: dict[str, Any] = {}
 
         # TTS setup
         if self.config.tts_provider == "edge-tts":
@@ -211,44 +212,62 @@ class Gateway:
         }
 
     def _build_live2d_tag_prompt(self) -> str:
-        """Build the Live2D tag instruction for system prompt based on current model."""
-        current_model = self.store.state.current_live2d_model
-        tags = None
-        if current_model and current_model in self._live2d_tags:
-            tags = self._live2d_tags[current_model]
-        elif self._live2d_tags:
-            # fallback to first available model
-            tags = next(iter(self._live2d_tags.values()))
-        if not tags:
-            return ""
-        exprs = tags.get("expressions", [])
-        motions = tags.get("motions", [])
-        if not exprs and not motions:
-            return ""
-        lines = ["# Live2D Expression & Motion Tags"]
-        lines.append(
-            "You can control the Live2D pet's expression and motion"
-            " by including special tags at the very end of your response."
-        )
-        if exprs:
-            lines.append(f"Available expressions: {', '.join(exprs)}")
-        if motions:
-            lines.append(f"Available motions: {', '.join(motions)}")
-        lines.append(
-            "Usage: put tags like [expression:happy] [motion:Tap] at the end of your response."
-        )
-        lines.append("Only use tags from the available lists. Do not invent new ones.")
+        """Build the Live2D control instruction for system prompt."""
+        lines = [
+            "# Live2D 身体与表情控制",
+            "你可以在回复末尾使用特殊标签来控制紫羽的姿态、表情和造型。",
+            "",
+            "## Pose（姿态）— 控制头部角度、眼神方向、身体姿势",
+            "- [pose:look_at_user] — 正视主人",
+            "- [pose:look_away] — 目光飘向别处（害羞/心虚）",
+            "- [pose:tilt_left] / [pose:tilt_right] — 歪头杀",
+            "- [pose:lean_forward] — 身体前倾，凑近主人",
+            "- [pose:lean_back] — 身体后仰",
+            "- [pose:look_up] / [pose:look_down] — 抬头/低头",
+            "- [pose:nod] — 点头",
+            "- [pose:shake_head] — 摇头",
+            "- [pose:gaze_left] / [pose:gaze_right] — 眼神瞟向一侧",
+            "",
+            "## Emotion（表情）— 控制五官情绪",
+            "- [emotion:happy] — 开心，笑眼弯起",
+            "- [emotion:shy] — 害羞脸红，眼神向下",
+            "- [emotion:angry] — 生气皱眉，眼神锐利",
+            "- [emotion:sad] — 难过，眼神落寞",
+            "- [emotion:cry] — 哭泣 QAQ",
+            "- [emotion:confused] — 疑惑歪头",
+            "- [emotion:dizzy] — 晕乎乎",
+            "- [emotion:excited] — 兴奋星星眼",
+            "- [emotion:pout] — 嘟嘴",
+            "- [emotion:tease] — 调皮吐舌头",
+            "- [emotion:bite_lip] — 咬嘴唇",
+            "- [emotion:surprised] — 惊讶睁大眼",
+            "- [emotion:calm] — 恢复平静",
+            "",
+            "## Prop（道具/造型）",
+            "- [prop:wings_big] / [prop:wings_small] / [prop:wings_hide] — 大/小/收起翅膀",
+            "- [prop:halo_on] / [prop:halo_off] — 头顶光环",
+            "- [prop:twintails] / [prop:default_hair] — 双马尾/默认发型",
+            "- [prop:pray] / [prop:pray_off] — 双手合十祈祷",
+            "- [prop:microphone] / [prop:microphone_off] — 麦克风",
+            "- [prop:trail_on] / [prop:trail_off] — 身后拖尾",
+            "",
+            "## 使用规则",
+            "- 每次回复最多使用 2-3 个标签",
+            "- 标签放在回复最末尾，单独一行或跟在文字后面",
+            "- 根据对话情绪和当前姿态自然选择，不要强行堆砌",
+            "- 注意你当前的状态，保持动作连贯性（比如已经歪头了就不要再发歪头）",
+        ]
         return "\n".join(lines)
 
     @staticmethod
     def _parse_live2d_tags(text: str) -> tuple[str, list[dict[str, str]]]:
-        """Extract [expression:xxx] and [motion:xxx] tags from text.
+        """Extract live2d tags from text.
 
-        Supports optional spaces inside brackets, e.g. [expression: happy].
+        Supports: [expression:xxx], [motion:xxx], [pose:xxx], [emotion:xxx], [prop:xxx]
         Returns (cleaned_text, tags).
         """
         import re
-        tag_re = re.compile(r"\[\s*(expression|motion)\s*:\s*([^\[\]]+?)\s*\]")
+        tag_re = re.compile(r"\[\s*(expression|motion|pose|emotion|prop)\s*:\s*([^\[\]]+?)\s*\]")
         tags: list[dict[str, str]] = []
         for match in tag_re.finditer(text):
             tag_type = match.group(1)
@@ -259,22 +278,48 @@ class Gateway:
         return cleaned, tags
 
     async def _emit_live2d_tags(self, tags: list[dict[str, str]]) -> None:
-        """Broadcast live2d expression/motion events to all clients."""
+        """Broadcast live2d pose/emotion/prop events to all clients."""
         for tag in tags:
-            if tag["type"] == "expression":
+            ttype = tag["type"]
+            name = tag["name"]
+            if ttype == "expression":
                 await self._broadcast(
                     {
                         "type": "event",
                         "method": "live2d.expression",
-                        "payload": {"expression": tag["name"]},
+                        "payload": {"expression": name},
                     }
                 )
-            elif tag["type"] == "motion":
+            elif ttype == "motion":
                 await self._broadcast(
                     {
                         "type": "event",
                         "method": "live2d.motion",
-                        "payload": {"motion": tag["name"], "priority": 3},
+                        "payload": {"motion": name, "priority": 3},
+                    }
+                )
+            elif ttype == "pose":
+                await self._broadcast(
+                    {
+                        "type": "event",
+                        "method": "live2d.pose",
+                        "payload": {"pose": name, "duration_ms": 500},
+                    }
+                )
+            elif ttype == "emotion":
+                await self._broadcast(
+                    {
+                        "type": "event",
+                        "method": "live2d.emotion",
+                        "payload": {"emotion": name, "duration_ms": 500},
+                    }
+                )
+            elif ttype == "prop":
+                await self._broadcast(
+                    {
+                        "type": "event",
+                        "method": "live2d.prop",
+                        "payload": {"prop": name, "duration_ms": 500},
                     }
                 )
 
@@ -354,6 +399,17 @@ class Gateway:
             live2d_prompt = self._build_live2d_tag_prompt()
             if live2d_prompt:
                 system_parts.append(live2d_prompt)
+            # 注入当前模型状态快照
+            state = self._live2d_state
+            if state:
+                state_lines = ["## 紫羽当前状态"]
+                if state.get("pose_description"):
+                    state_lines.append(f"- 姿态：{state['pose_description']}")
+                if state.get("emotion_description"):
+                    state_lines.append(f"- 表情：{state['emotion_description']}")
+                if state.get("props_description"):
+                    state_lines.append(f"- 装饰：{state['props_description']}")
+                system_parts.append("\n".join(state_lines))
 
         messages: list[Any] = [AIMessage(role="system", content="\n\n".join(system_parts))]
 
@@ -692,6 +748,7 @@ class Gateway:
             "provider.update": self._handle_provider_update,
             "provider.remove": self._handle_provider_remove,
             "live2d.set_model": self._handle_live2d_set_model,
+            "live2d.state_report": self._handle_live2d_state_report,
             "system.shutdown": self._handle_shutdown,
         }
 
@@ -788,7 +845,7 @@ class Gateway:
             )
         # Force text-mode two-phase tool calling for all providers
         use_native_tools = False
-        ai_messages = self._build_ai_messages(session.id, include_tools=True)
+        ai_messages = self._build_ai_messages(session.id, include_tools=True, include_live2d_tags=True)
         tools = None
         full_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
@@ -861,7 +918,7 @@ class Gateway:
         # Force ALL providers to use text-mode two-phase tool calling.
         # This ensures every model follows: brief -> system:get_tool_schema -> actual tool.
         use_native_tools = False
-        ai_messages = self._build_ai_messages(session.id, include_tools=True)
+        ai_messages = self._build_ai_messages(session.id, include_tools=True, include_live2d_tags=True)
         tools = None
         full_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
@@ -1207,6 +1264,18 @@ class Gateway:
                 "type": "response",
                 "method": "provider.remove",
                 "payload": {"success": ok},
+            },
+        )
+
+    async def _handle_live2d_state_report(self, client_id: str, payload: dict[str, Any]) -> None:
+        """Receive state snapshot from frontend and cache it."""
+        self._live2d_state = payload
+        await self._send(
+            client_id,
+            {
+                "type": "response",
+                "method": "live2d.state_report",
+                "payload": {"status": "ok"},
             },
         )
 
