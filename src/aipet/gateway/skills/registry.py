@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
-import inspect
-import typing
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from aipet.gateway.providers.ai import Tool
+from aipet.gateway.skills.schema import build_tool_schema
 from aipet.utils.paths import get_user_data_dir
 
 
@@ -167,35 +166,4 @@ class SkillRegistry:
         return skill.tools[tool_name], skill
 
 
-def _build_function_schema(
-    skill_id: str, tool_name: str, func: Callable[..., Any], skill_desc: str
-) -> dict[str, Any]:
-    sig = inspect.signature(func)
-    hints = typing.get_type_hints(func)
-    properties: dict[str, typing.Any] = {}
-    required: list[str] = []
-    for param_name, param in sig.parameters.items():
-        if param_name == "self":
-            continue
-        param_type = hints.get(param_name, str)
-        json_type = "string"
-        if param_type in (int, float):
-            json_type = "number"
-        elif param_type is bool:
-            json_type = "boolean"
-        properties[param_name] = {"type": json_type}
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
 
-    doc = inspect.getdoc(func) or ""
-    description = f"{skill_desc}\n\nTool `{tool_name}`: {doc}".strip()
-
-    return {
-        "name": f"{skill_id}:{tool_name}",
-        "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        },
-    }
