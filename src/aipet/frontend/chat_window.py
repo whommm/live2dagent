@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -24,9 +24,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTextBrowser,
     QTextEdit,
@@ -60,6 +62,7 @@ class MessageBubble(QWidget):
         message_id: str = "",
         parent: QWidget | None = None,
         is_error: bool = False,
+        animate: bool = True,
     ) -> None:
         super().__init__(parent)
         self.role = role
@@ -69,6 +72,14 @@ class MessageBubble(QWidget):
         self._stream_buffer = ""
         self._setup_ui(content, timestamp)
         self._apply_style()
+        # NOTE: QGraphicsOpacityEffect is disabled on MessageBubble because
+        # ChatWindow already has a QGraphicsOpacityEffect. Qt 6 does not
+        # support nested graphics effects and it causes "Painter not active"
+        # errors when the paint engine tries to render both simultaneously.
+        self._animate = False
+        self._opacity_effect = None
+        self._move_animation: QPropertyAnimation | None = None
+        self._fade_animation: QPropertyAnimation | None = None
 
     def _setup_ui(self, content: str, timestamp: str | None) -> None:
         main_layout = QVBoxLayout(self)
@@ -260,7 +271,9 @@ class MessageBubble(QWidget):
     def showEvent(self, event: Any) -> None:
         """Recalculate text height once the widget has real layout geometry."""
         super().showEvent(event)
-        self._update_text_height()
+        # Defer height calculation to the next event-loop iteration so the
+        # viewport has valid geometry.
+        QTimer.singleShot(0, self._update_text_height)
 
     def _update_text_height(self) -> None:
         """Resize text display to fit its content exactly."""
@@ -404,8 +417,8 @@ class MessageBubble(QWidget):
 
     @staticmethod
     def _strip_live2d_tags(text: str) -> str:
-        """Remove [expression:xxx] and [motion:xxx] tags from displayed text."""
-        return re.sub(r"\[\s*(expression|motion)\s*:\s*[^\[\]]+?\s*\]", "", text).strip()
+        """Remove [expression:xxx], [motion:xxx], [pose:xxx], [emotion:xxx] and [prop:xxx] tags from displayed text."""
+        return re.sub(r"\[\s*(expression|motion|pose|emotion|prop)\s*:\s*[^\[\]]+?\s*\]", "", text).strip()
 
     @staticmethod
     def _clean_html_tags(text: str) -> str:
@@ -457,7 +470,8 @@ class MessageBubble(QWidget):
             final_text = self.text_display.toPlainText()
             color = MaterialTheme.on_secondary_container if self.role == "assistant" else MaterialTheme.on_surface
             self.text_display.setHtml(self._markdown_to_html(final_text, text_color=color))
-            self._update_text_height()
+            # Defer height calculation until the document layout is ready.
+            QTimer.singleShot(0, self._update_text_height)
 
     def set_text(self, text: str) -> None:
         cleaned = self._clean_html_tags(self._strip_live2d_tags(text))
@@ -475,7 +489,7 @@ class MessageBubble(QWidget):
 
 
 class ToolCard(QWidget):
-    """A visual card showing tool call status (running / done / error)."""
+    """A visual card showing tool call status with expandable details."""
 
     def __init__(
         self,
@@ -492,9 +506,15 @@ class ToolCard(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Left colored status strip
+        self.strip = QLabel()
+        self.strip.setFixedWidth(4)
+        self.strip.setStyleSheet(f"background-color: {MaterialTheme.primary}; border-radius: 2px;")
+        root.addWidget(self.strip)
 
         # Main card container
         self.container = QWidget()
@@ -502,97 +522,171 @@ class ToolCard(QWidget):
         container_layout.setContentsMargins(12, 10, 12, 10)
         container_layout.setSpacing(6)
 
-        # Header row: icon + name + status
+        # Header row: icon + name + args preview + status + expand btn
         header = QHBoxLayout()
         header.setSpacing(8)
         header.setContentsMargins(0, 0, 0, 0)
 
-        icon = QLabel("🔧")
-        icon.setStyleSheet("font-size: 14px; border: none; background: transparent;")
+        self.icon_label = QLabel("🔧")
+        self.icon_label.setStyleSheet("font-size: 14px; border: none; background: transparent;")
 
         self.name_label = QLabel(self.name)
-        self.name_label.setFont(QFont(MaterialTheme.font_family, 12, QFont.Weight.Medium))
+        self.name_label.setFont(QFont("JetBrains Mono", 11, QFont.Weight.Medium))
         self.name_label.setStyleSheet(f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;")
 
-        self.status_label = QLabel("● 正在调用...")
-        self.status_label.setFont(QFont(MaterialTheme.font_family, 11))
-        self.status_label.setStyleSheet(f"color: {MaterialTheme.primary}; border: none; background: transparent;")
+        # Argument summary (one-line)
+        args_summary = self._fmt_args_summary(self.arguments)
+        self.args_preview = QLabel(args_summary)
+        self.args_preview.setFont(QFont("JetBrains Mono", 9))
+        self.args_preview.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        self.args_preview.setMaximumWidth(180)
 
-        header.addWidget(icon)
-        header.addWidget(self.name_label, stretch=1)
-        header.addWidget(self.status_label)
+        self.status_label = QLabel("● running")
+        self.status_label.setFont(QFont(MaterialTheme.font_family, 10))
+        self.status_label.setStyleSheet(
+            f"color: {MaterialTheme.primary}; border: none; background: transparent; "
+            f"padding: 1px 6px; border-radius: 4px;"
+        )
 
-        # Expand/collapse button for details
-        self.expand_btn = QPushButton("展开")
-        self.expand_btn.setFixedSize(40, 22)
+        self.expand_btn = QPushButton("▸")
+        self.expand_btn.setFixedSize(24, 24)
         self.expand_btn.setStyleSheet(
             f"QPushButton {{ background-color: transparent; color: {MaterialTheme.outline}; "
-            f"border: none; border-radius: 4px; font-size: 11px; padding: 0px; }}"
-            f"QPushButton:hover {{ color: {MaterialTheme.on_surface}; }}"
+            f"border: none; border-radius: 12px; font-size: 12px; padding: 0px; }}"
+            f"QPushButton:hover {{ color: {MaterialTheme.on_surface}; background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 6)}; }}"
         )
         self.expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.expand_btn.setToolTip("Expand details")
         self.expand_btn.clicked.connect(self._toggle_expand)
-        header.addWidget(self.expand_btn)
 
+        header.addWidget(self.icon_label)
+        header.addWidget(self.name_label)
+        header.addWidget(self.args_preview, stretch=1)
+        header.addWidget(self.status_label)
+        header.addWidget(self.expand_btn)
         container_layout.addLayout(header)
 
-        # Detail area (arguments + result), hidden by default
+        # Detail area (arguments JSON + result), hidden by default
         self.detail_widget = QWidget()
         self.detail_widget.hide()
         detail_layout = QVBoxLayout(self.detail_widget)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(4)
+        detail_layout.setContentsMargins(4, 4, 4, 4)
+        detail_layout.setSpacing(8)
 
-        # Arguments
-        args_text = QLabel(f"参数: {self._fmt_dict(self.arguments)}")
-        args_text.setFont(QFont(MaterialTheme.font_family, 10))
-        args_text.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
-        args_text.setWordWrap(True)
-        detail_layout.addWidget(args_text)
+        # Arguments block
+        args_block = QWidget()
+        args_block.setStyleSheet(f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;")
+        args_block_layout = QVBoxLayout(args_block)
+        args_block_layout.setContentsMargins(8, 6, 8, 6)
+        args_block_layout.setSpacing(2)
 
-        # Result placeholder
-        self.result_label = QLabel("")
-        self.result_label.setFont(QFont(MaterialTheme.font_family, 10))
-        self.result_label.setStyleSheet(f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;")
-        self.result_label.setWordWrap(True)
-        detail_layout.addWidget(self.result_label)
+        args_title = QLabel("Arguments")
+        args_title.setFont(QFont(MaterialTheme.font_family, 9, QFont.Weight.Bold))
+        args_title.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        args_block_layout.addWidget(args_title)
+
+        self.args_detail = QLabel(self._fmt_dict_pretty(self.arguments))
+        self.args_detail.setFont(QFont("JetBrains Mono", 10))
+        self.args_detail.setStyleSheet(
+            f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;"
+        )
+        self.args_detail.setWordWrap(True)
+        self.args_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        args_block_layout.addWidget(self.args_detail)
+        detail_layout.addWidget(args_block)
+
+        # Result block
+        self.result_block = QWidget()
+        self.result_block.setStyleSheet(f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;")
+        result_block_layout = QVBoxLayout(self.result_block)
+        result_block_layout.setContentsMargins(8, 6, 8, 6)
+        result_block_layout.setSpacing(2)
+
+        result_title = QLabel("Result")
+        result_title.setFont(QFont(MaterialTheme.font_family, 9, QFont.Weight.Bold))
+        result_title.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        result_block_layout.addWidget(result_title)
+
+        self.result_text = QTextBrowser()
+        self.result_text.setOpenExternalLinks(False)
+        self.result_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.result_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.result_text.setMaximumHeight(120)
+        self.result_text.setStyleSheet(
+            f"QTextBrowser {{ background-color: transparent; border: none; padding: 0px; "
+            f"color: {MaterialTheme.on_surface_variant}; font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 11px; }}"
+        )
+        result_block_layout.addWidget(self.result_text)
+        self.result_block.hide()
+        detail_layout.addWidget(self.result_block)
 
         container_layout.addWidget(self.detail_widget)
 
-        # Left colored border strip via container stylesheet
         self.container.setStyleSheet(
             f"QWidget {{ background-color: {MaterialTheme.surface_variant}; border-radius: 12px; }}"
         )
-        layout.addWidget(self.container)
+        root.addWidget(self.container)
+        self.setMaximumWidth(480)
 
-        # Fixed width to make it look like a sub-item
-        self.setMaximumWidth(420)
-
-    def _fmt_dict(self, d: dict[str, Any]) -> str:
+    @staticmethod
+    def _fmt_args_summary(arguments: dict[str, Any]) -> str:
         import json
         try:
-            return json.dumps(d, ensure_ascii=False)
+            vals = list(arguments.values())
+            if not vals:
+                return "(no args)"
+            preview = json.dumps(vals, ensure_ascii=False)
+            if len(preview) > 50:
+                preview = preview[:47] + "..."
+            return preview
+        except Exception:
+            return str(arguments)[:50]
+
+    @staticmethod
+    def _fmt_dict_pretty(d: dict[str, Any]) -> str:
+        import json
+        try:
+            return json.dumps(d, ensure_ascii=False, indent=2)
         except Exception:
             return str(d)
 
     def _toggle_expand(self) -> None:
         self._is_expanded = not self._is_expanded
         self.detail_widget.setVisible(self._is_expanded)
-        self.expand_btn.setText("收起" if self._is_expanded else "展开")
+        self.expand_btn.setText("▾" if self._is_expanded else "▸")
+        self.expand_btn.setToolTip("Collapse details" if self._is_expanded else "Expand details")
 
-    def set_done(self, result: str) -> None:
-        self.status_label.setText("✓ 已完成")
-        self.status_label.setStyleSheet(f"color: {MaterialTheme.success}; border: none; background: transparent;")
-        self.result_label.setText(f"结果: {result[:200]}{'...' if len(result) > 200 else ''}")
-        # Auto-expand on error or if result is interesting
-        if "error" in result.lower() or "Error" in result:
-            self.status_label.setText("✓ 已完成（有警告）")
-            self.status_label.setStyleSheet(f"color: {MaterialTheme.error}; border: none; background: transparent;")
+    def _set_status_color(self, color: str, bg_alpha: int = 12) -> None:
+        self.strip.setStyleSheet(f"background-color: {color}; border-radius: 2px;")
+        bg = MaterialTheme.rgba(color, bg_alpha)
+        self.status_label.setStyleSheet(
+            f"color: {color}; border: none; background: {bg}; "
+            f"padding: 1px 6px; border-radius: 4px;"
+        )
+
+    def set_done(self, result: str, duration_ms: int = 0) -> None:
+        has_error = "error" in result.lower() or "exception" in result.lower() or result.startswith("Error")
+        if has_error:
+            self.icon_label.setText("⚠️")
+            self.status_label.setText("● done (warn)" if not duration_ms else f"● done (warn) · {duration_ms}ms")
+            self._set_status_color(MaterialTheme.error)
+        else:
+            self.icon_label.setText("✅")
+            self.status_label.setText("● done" if not duration_ms else f"● done · {duration_ms}ms")
+            self._set_status_color("#4CAF50")
+
+        self.result_text.setPlainText(result)
+        self.result_block.show()
+        # Auto-expand on error
+        if has_error and not self._is_expanded:
+            self._toggle_expand()
 
     def set_error(self, error: str) -> None:
-        self.status_label.setText("✗ 失败")
-        self.status_label.setStyleSheet(f"color: {MaterialTheme.error}; border: none; background: transparent;")
-        self.result_label.setText(f"错误: {error}")
+        self.icon_label.setText("❌")
+        self.status_label.setText("● failed")
+        self._set_status_color(MaterialTheme.error, 18)
+        self.result_text.setPlainText(error)
+        self.result_block.show()
         if not self._is_expanded:
             self._toggle_expand()
 
@@ -715,6 +809,7 @@ class ChatWindow(QWidget):
     """Main chat interface with model selector and session sidebar."""
 
     closed = Signal()
+    _logger = logging.getLogger(__name__)
 
     def __init__(self, client: GatewayClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -728,6 +823,7 @@ class ChatWindow(QWidget):
         self._current_session_id: str = ""
         self._session_items: dict[str, QListWidgetItem] = {}
         self._is_sending = False
+        self._is_switching = False
         self._is_near_bottom = True
         self._provider_dialog: ProviderDialog | None = None
         self._shown_disconnect_msg = False
@@ -762,13 +858,13 @@ class ChatWindow(QWidget):
 
         # ---------------- Left sidebar ----------------
         left_panel = QWidget()
-        left_panel.setMinimumWidth(160)
-        left_panel.setMaximumWidth(350)
+        left_panel.setMinimumWidth(220)
+        left_panel.setMaximumWidth(400)
         left_panel.setStyleSheet(
             f"background-color: {MaterialTheme.surface}; border-right: 1px solid {MaterialTheme.outline_variant};"
         )
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setContentsMargins(12, 12, 12, 12)
         left_layout.setSpacing(10)
 
         self.new_chat_btn = QPushButton("+ New Chat")
@@ -778,6 +874,7 @@ class ChatWindow(QWidget):
         left_layout.addWidget(self.new_chat_btn)
 
         self.session_list = QListWidget()
+        self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.session_list.setStyleSheet(
             f"""
             QListWidget {{
@@ -785,12 +882,13 @@ class ChatWindow(QWidget):
                 color: {MaterialTheme.on_surface};
                 border: none;
                 outline: none;
+                padding: 4px;
             }}
             QListWidget::item {{
                 background-color: transparent;
-                border-radius: 8px;
+                border-radius: 10px;
                 padding: 0px;
-                margin: 2px 0px;
+                margin: 3px 0px;
             }}
             QListWidget::item:selected {{
                 background-color: {MaterialTheme.secondary_container};
@@ -802,6 +900,8 @@ class ChatWindow(QWidget):
         )
         self.session_list.itemClicked.connect(self._on_session_item_clicked)
         self.session_list.itemDoubleClicked.connect(self._on_session_item_double_clicked)
+        self.session_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.session_list.customContextMenuRequested.connect(self._on_session_context_menu)
         left_layout.addWidget(self.session_list, stretch=1)
 
         splitter.addWidget(left_panel)
@@ -948,6 +1048,18 @@ class ChatWindow(QWidget):
         self.send_button.setStyleSheet(MaterialTheme.filled_button())
         self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_button.clicked.connect(self._on_send_clicked)
+        # Stop state style (red gradient) — applied dynamically in _set_sending
+        self._send_btn_style = MaterialTheme.filled_button()
+        self._stop_btn_style = (
+            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 #ff6b6b, stop:1 #ee5a5a); color: white; border: none; "
+            "border-radius: 8px; font-weight: 600; font-size: 13px; padding: 0px; }"
+            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 #ff8585, stop:1 #f06b6b); }"
+            "QPushButton:pressed { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 #e05555, stop:1 #d04a4a); }"
+            "QPushButton:disabled { opacity: 0.5; }"
+        )
 
         input_layout.addWidget(self.input_field, stretch=1)
         input_layout.addWidget(self.send_button, alignment=Qt.AlignmentFlag.AlignBottom)
@@ -957,7 +1069,7 @@ class ChatWindow(QWidget):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([200, 700])
+        splitter.setSizes([280, 620])
         root_layout.addWidget(splitter)
 
     def _build_empty_state(self) -> QWidget:
@@ -1075,7 +1187,7 @@ class ChatWindow(QWidget):
 
     def _scroll_to_bottom(self) -> None:
         if self._is_near_bottom:
-            QTimer.singleShot(50, self._do_scroll)
+            QTimer.singleShot(100, self._do_scroll)
 
     def _do_scroll(self) -> None:
         scrollbar = self.scroll_area.verticalScrollBar()
@@ -1199,6 +1311,20 @@ class ChatWindow(QWidget):
                 self.input_field.clearFocus()
                 return True
 
+        # Show/hide session action buttons on hover (deferred to avoid
+        # interrupting an active QPainter inside the effect pipeline).
+        if isinstance(obj, QWidget) and obj.property("session_item") is True:
+            if event.type() == event.Type.Enter:
+                for child in obj.findChildren(QWidget):
+                    if child.property("action_buttons") is True:
+                        QTimer.singleShot(0, child.show)
+                        break
+            elif event.type() == event.Type.Leave:
+                for child in obj.findChildren(QWidget):
+                    if child.property("action_buttons") is True:
+                        QTimer.singleShot(0, child.hide)
+                        break
+
         return super().eventFilter(obj, event)
 
     def _recall_last_message(self) -> None:
@@ -1218,6 +1344,7 @@ class ChatWindow(QWidget):
 
     def _on_send_clicked(self) -> None:
         if self._is_sending:
+            self._stop_generating()
             return
         text = self.input_field.toPlainText().strip()
         # Allow sending with attachments even if text is empty
@@ -1230,6 +1357,20 @@ class ChatWindow(QWidget):
         self._set_sending(True)
         self._add_user_bubble(text, attachments)
         asyncio.ensure_future(self._send_message(text, attachments))
+
+    def _stop_generating(self) -> None:
+        """Front-end stop: ignore remaining stream chunks and reset UI.
+
+        Note: This does not interrupt the Gateway's LLM request, but it
+        gives the user immediate control over the UI.
+        """
+        self._set_sending(False)
+        self._hide_typing_indicator()
+        # Finish any streaming bubble
+        for bubble in list(self._message_bubbles.values()):
+            if getattr(bubble, "_is_streaming", False):
+                bubble.finish_streaming()
+        self.show_system_message("Generation stopped by user.")
 
     async def _send_message(self, text: str, attachments: list[str]) -> None:
         try:
@@ -1248,8 +1389,15 @@ class ChatWindow(QWidget):
 
     def _set_sending(self, sending: bool) -> None:
         self._is_sending = sending
-        self.send_button.setEnabled(not sending)
-        self.send_button.setText("..." if sending else "Send")
+        self.send_button.setEnabled(True)  # Always enabled so user can stop
+        if sending:
+            self.send_button.setText("Stop")
+            self.send_button.setStyleSheet(self._stop_btn_style)
+            self.send_button.setToolTip("Click to stop generating")
+        else:
+            self.send_button.setText("Send")
+            self.send_button.setStyleSheet(self._send_btn_style)
+            self.send_button.setToolTip("Send message")
 
     # ------------------------------------------------------------------
     # Sessions
@@ -1279,31 +1427,65 @@ class ChatWindow(QWidget):
             self.session_list.addItem(item)
             self._session_items[sid] = item
 
-            # Item widget with label and delete button
-            widget = QWidget()
-            row = QHBoxLayout(widget)
-            row.setContentsMargins(8, 6, 4, 6)
-            row.setSpacing(4)
+            # Container widget with hover-aware action buttons
+            container = QWidget()
+            container.setProperty("session_item", True)
+            container.setMouseTracking(True)
+            container.installEventFilter(self)
+            row = QHBoxLayout(container)
+            row.setContentsMargins(12, 10, 8, 10)
+            row.setSpacing(6)
 
-            label = QLabel(name)
+            # Label: elide long names so buttons are always visible
+            label = QLabel()
+            label.setProperty("session_name", name)
+            metrics = label.fontMetrics()
+            elided = metrics.elidedText(name, Qt.TextElideMode.ElideRight, 180)
+            label.setText(elided)
+            label.setToolTip(name)
             label.setStyleSheet(
-                f"color: {MaterialTheme.on_surface}; font-size: 13px; border: none;"
+                f"color: {MaterialTheme.on_surface}; font-size: 13px; border: none; background: transparent;"
             )
             label.setWordWrap(False)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             row.addWidget(label, stretch=1)
 
-            del_btn = QPushButton("✕")
-            del_btn.setFixedSize(22, 22)
+            # Action buttons container (shown on hover)
+            btn_container = QWidget()
+            btn_container.setProperty("action_buttons", True)
+            btn_layout = QHBoxLayout(btn_container)
+            btn_layout.setContentsMargins(0, 0, 0, 0)
+            btn_layout.setSpacing(4)
+
+            edit_btn = QPushButton("✏️")
+            edit_btn.setFixedSize(24, 24)
+            edit_btn.setStyleSheet(
+                f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
+                f"border: none; border-radius: 12px; font-size: 12px; padding: 0px; }}"
+                f"QPushButton:hover {{ background-color: {MaterialTheme.primary_container}; color: {MaterialTheme.on_primary_container}; }}"
+            )
+            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit_btn.setToolTip("Rename session")
+            edit_btn.clicked.connect(lambda _checked=False, sid=sid: asyncio.ensure_future(self._rename_session_interactive(sid)))
+            btn_layout.addWidget(edit_btn)
+
+            del_btn = QPushButton("🗑️")
+            del_btn.setFixedSize(24, 24)
             del_btn.setStyleSheet(
                 f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-                f"border: none; border-radius: 11px; font-size: 12px; padding: 0px; }}"
+                f"border: none; border-radius: 12px; font-size: 12px; padding: 0px; }}"
                 f"QPushButton:hover {{ background-color: {MaterialTheme.error}; color: {MaterialTheme.on_error}; }}"
             )
+            del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            del_btn.setToolTip("Delete session")
             del_btn.clicked.connect(lambda _checked=False, sid=sid: asyncio.ensure_future(self._delete_session(sid)))
-            row.addWidget(del_btn)
+            btn_layout.addWidget(del_btn)
 
-            self.session_list.setItemWidget(item, widget)
-            item.setSizeHint(widget.sizeHint())
+            btn_container.hide()
+            row.addWidget(btn_container)
+
+            self.session_list.setItemWidget(item, container)
+            item.setSizeHint(container.sizeHint())
 
         self._highlight_current_session()
 
@@ -1312,6 +1494,8 @@ class ChatWindow(QWidget):
             item.setSelected(sid == self._current_session_id)
 
     def _on_session_item_clicked(self, item: QListWidgetItem) -> None:
+        if self._is_switching:
+            return
         sid = item.data(Qt.ItemDataRole.UserRole)
         if sid and sid != self._current_session_id:
             asyncio.ensure_future(self._switch_session(sid))
@@ -1321,56 +1505,103 @@ class ChatWindow(QWidget):
         if sid:
             asyncio.ensure_future(self._rename_session_interactive(sid))
 
+    def _on_session_context_menu(self, position: Any) -> None:
+        """Show a context menu on the session list for rename / delete."""
+        item = self.session_list.itemAt(position)
+        if item is None:
+            return
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        if not sid:
+            return
+
+        menu = QMenu(self)
+        rename_action = menu.addAction("✏️ 重命名")
+        delete_action = menu.addAction("🗑️ 删除")
+        action = menu.exec(self.session_list.mapToGlobal(position))
+        if action == rename_action:
+            asyncio.ensure_future(self._rename_session_interactive(sid))
+        elif action == delete_action:
+            asyncio.ensure_future(self._delete_session(sid))
+
     async def _switch_session(self, session_id: str) -> None:
-        self._current_session_id = session_id
-        self._highlight_current_session()
-        self._clear_messages()
+        if self._is_switching:
+            return
+        self._is_switching = True
         try:
-            await self.client.request("session.set_current", {"session_id": session_id})
-        except Exception as exc:
-            self.show_system_message(f"Failed to set current session: {exc}", is_error=True)
-        try:
-            resp = await self.client.request("chat.history", {"session_id": session_id, "limit": 100})
-            messages = resp.get("messages", [])
-            for msg in messages:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                ts_raw = msg.get("created_at", "")
-                msg_id = msg.get("id", "")
-                ts = ""
-                if ts_raw:
-                    try:
-                        dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-                        ts = dt.strftime("%H:%M")
-                    except Exception:
+            self._is_near_bottom = True  # Reset scroll flag when switching sessions
+            self._current_session_id = session_id
+            self._highlight_current_session()
+            self._clear_messages()
+            try:
+                await self.client.request("session.set_current", {"session_id": session_id})
+            except Exception as exc:
+                self.show_system_message(f"Failed to set current session: {exc}", is_error=True)
+            try:
+                resp = await self.client.request("chat.history", {"session_id": session_id, "limit": 100})
+                messages = resp.get("messages", [])
+                # Hide empty state immediately before loading any messages so it
+                # doesn't float above partially-loaded history.
+                if messages:
+                    self._empty_state.hide()
+                # Load in small batches so the event loop can process repaints
+                # and keep the UI responsive during large history loads.
+                batch_size = 15
+                last_bubble: MessageBubble | None = None
+                for i in range(0, len(messages), batch_size):
+                    batch = messages[i : i + batch_size]
+                    for msg in batch:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        ts_raw = msg.get("created_at", "")
+                        msg_id = msg.get("id", "")
                         ts = ""
-                if role == "user":
-                    bubble = MessageBubble("user", content, timestamp=ts, message_id=msg_id, parent=self.messages_container)
-                    bubble.delete_requested.connect(self._on_bubble_delete_requested)
-                    bubble.edit_requested.connect(self._on_bubble_edit_requested)
-                    self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
-                elif role == "assistant":
-                    bubble = MessageBubble("assistant", content, timestamp=ts, message_id=msg_id, parent=self.messages_container)
-                    bubble.delete_requested.connect(self._on_bubble_delete_requested)
-                    bubble.regenerate_requested.connect(self._on_bubble_regenerate_requested)
-                    self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
-            if messages:
-                self._scroll_to_bottom()
-        except Exception as exc:
-            self.show_system_message(f"Failed to load history: {exc}", is_error=True)
+                        if ts_raw:
+                            try:
+                                dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                                ts = dt.strftime("%H:%M")
+                            except Exception:
+                                ts = ""
+                        if role == "user":
+                            bubble = MessageBubble("user", content, timestamp=ts, message_id=msg_id, parent=self.messages_container, animate=False)
+                            bubble.delete_requested.connect(self._on_bubble_delete_requested)
+                            bubble.edit_requested.connect(self._on_bubble_edit_requested)
+                            self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+                            self._message_bubbles[msg_id] = bubble
+                            last_bubble = bubble
+                        elif role == "assistant":
+                            bubble = MessageBubble("assistant", content, timestamp=ts, message_id=msg_id, parent=self.messages_container, animate=False)
+                            bubble.delete_requested.connect(self._on_bubble_delete_requested)
+                            bubble.regenerate_requested.connect(self._on_bubble_regenerate_requested)
+                            self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+                            self._message_bubbles[msg_id] = bubble
+                            last_bubble = bubble
+                    if i + batch_size < len(messages):
+                        await asyncio.sleep(0)  # yield to event loop
+                if last_bubble is not None:
+                    # Defer scrolling so queued paint events finish first.
+                    QTimer.singleShot(0, lambda b=last_bubble: self.scroll_area.ensureWidgetVisible(b, 0, 0))
+                    self._scroll_to_bottom()
+            except Exception as exc:
+                self.show_system_message(f"Failed to load history: {exc}", is_error=True)
+        finally:
+            self._is_switching = False
 
     def _clear_messages(self) -> None:
         # Remove all items from layout, then re-add empty_state + stretch.
-        # Previously takeAt(0) removed empty_state from the layout but left
-        # it as a floating visible widget that covered newly inserted bubbles.
         while self.messages_layout.count():
             item = self.messages_layout.takeAt(0)
-            widget = item.widget() if item else None
+            if item is None:
+                continue
+            widget = item.widget()
             if widget is self._empty_state:
+                # Remove the old layout item so it doesn't leak.
+                del item
                 continue
             if widget is not None:
                 widget.deleteLater()
-            # Spacer items are freed automatically when the layout item is removed
+            # Explicitly free the layout item; QSpacerItem is not a QObject
+            # and will leak if we rely solely on Python GC.
+            del item
         if self._empty_state is not None:
             self.messages_layout.addWidget(self._empty_state)
             self._empty_state.show()
@@ -1444,7 +1675,7 @@ class ChatWindow(QWidget):
                 if widget:
                     label = widget.findChild(QLabel)
                     if label:
-                        current_name = label.text()
+                        current_name = label.property("session_name") or label.text()
                 break
         name, ok = QInputDialog.getText(self, "Rename Session", "New name:", text=current_name)
         if ok and name.strip():
@@ -1632,6 +1863,9 @@ class ChatWindow(QWidget):
         bubble.edit_requested.connect(self._on_bubble_edit_requested)
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
         self._empty_state.hide()
+        # Defer scrolling so the bubble's opacity animation (QGraphicsOpacityEffect)
+        # doesn't collide with the scroll area's paint engine.
+        QTimer.singleShot(0, lambda b=bubble: self.scroll_area.ensureWidgetVisible(b, 0, 0))
         self._scroll_to_bottom()
 
     def _on_chat_message(self, payload: dict[str, Any]) -> None:
@@ -1683,14 +1917,14 @@ class ChatWindow(QWidget):
         self._set_sending(False)
 
     def _on_chat_proactive(self, payload: dict[str, Any]) -> None:
-        print(f"[ChatWindow] Received chat.proactive: session={payload.get('session_id')}, content={payload.get('content', '')[:30]!r}")
+        self._logger.debug("Received chat.proactive: session=%s, content=%r", payload.get('session_id'), payload.get('content', '')[:30])
         sid = payload.get("session_id", "")
         content = payload.get("content", "")
         msg_id = payload.get("message_id", "")
         ts = datetime.now().strftime("%H:%M")
 
         if sid != self._current_session_id:
-            print(f"[ChatWindow] Auto-switching to session {sid} for proactive message")
+            self._logger.debug("Auto-switching to session %s for proactive message", sid)
             asyncio.ensure_future(self._switch_session_and_show_proactive(sid, content, msg_id, ts))
             return
         self._add_assistant_bubble(content, msg_id, ts)
@@ -1749,6 +1983,9 @@ class ChatWindow(QWidget):
             self._message_bubbles[msg_id] = bubble
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
         self._empty_state.hide()
+        # Defer scrolling so the bubble's opacity animation (QGraphicsOpacityEffect)
+        # doesn't collide with the scroll area's paint engine.
+        QTimer.singleShot(0, lambda b=bubble: self.scroll_area.ensureWidgetVisible(b, 0, 0))
         self._scroll_to_bottom()
 
     def show_system_message(self, text: str, is_error: bool = False) -> None:
