@@ -13,10 +13,18 @@ from aipet.gateway.providers.ai import Chunk, Message
 class AnthropicProvider:
     """Anthropic Claude API provider."""
 
-    def __init__(self, api_key: str, model_id: str = "claude-3-5-sonnet-20241022") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_id: str = "claude-3-5-sonnet-20241022",
+        base_url: str | None = None,
+    ) -> None:
         self._api_key = api_key
         self._model_id = model_id
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = anthropic.AsyncAnthropic(**kwargs)
 
     @property
     def name(self) -> str:
