@@ -223,7 +223,11 @@ class ProviderManager:
                     entry_id=entry.id,
                 )
                 return EchoProvider(model_id=mid)
-            return AnthropicProvider(api_key=entry.api_key, model_id=mid)
+            return AnthropicProvider(
+                api_key=entry.api_key,
+                model_id=mid,
+                base_url=entry.base_url,
+            )
         elif entry.type == "ollama":
             return OllamaProvider(
                 model_id=mid,
