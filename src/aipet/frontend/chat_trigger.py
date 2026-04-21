@@ -33,12 +33,14 @@ class ChatTriggerButton(QWidget):
         self._is_expanded = False
         self._hover_animation: QPropertyAnimation | None = None
 
-        # Independent top-level tool window – stays on top but never steals focus
+        # Independent top-level tool window – stays on top.
+        # WA_ShowWithoutActivating is used instead of WindowDoesNotAcceptFocus
+        # because the latter causes Windows to ignore the window after other
+        # top-level windows in the same process are activated/closed.
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)

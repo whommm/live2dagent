@@ -706,8 +706,8 @@ class PetWindow(QWidget):
         # Window is hidden, not destroyed; keep reference for state preservation
         # Bring the edge trigger back to the top so it doesn't get buried.
         if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+            self._chat_trigger.show()
             self._chat_trigger.raise_()
-            self._chat_trigger.activateWindow()
 
     def _show_provider_dialog(self) -> None:
         if self._provider_dialog is not None:
