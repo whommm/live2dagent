@@ -250,6 +250,7 @@ class Gateway:
             "- [prop:pray] / [prop:pray_off] — 双手合十祈祷",
             "- [prop:microphone] / [prop:microphone_off] — 麦克风",
             "- [prop:trail_on] / [prop:trail_off] — 身后拖尾",
+            "- [prop:hands_free] / [prop:hands_on_chin] — 双手自然下垂 / 手托下巴",
             "",
             "## 使用规则",
             "- 每次回复最多使用 2-3 个标签",

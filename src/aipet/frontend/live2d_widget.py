@@ -211,12 +211,22 @@ class Live2DWidget(QOpenGLWidget):
         "halo_off": {"Param102": 0.0},
         "twintails": {"Param101": 1.0},
         "default_hair": {"Param101": 0.0},
-        "pray": {"Param88": 1.0},
-        "pray_off": {"Param88": 0.0},
-        "microphone": {"Param89": 1.0},
-        "microphone_off": {"Param89": 0.0},
+        "pray": {"Param88": 1.0, "Param87": 0.0},
+        "pray_off": {"Param88": 0.0, "Param87": 1.0},
+        "microphone": {"Param89": 1.0, "Param87": 0.0},
+        "microphone_off": {"Param89": 0.0, "Param87": 1.0},
         "trail_on": {"Param109": 1.0},
         "trail_off": {"Param109": 0.0},
+        "hands_free": {"Param87": 1.0},
+        "hands_on_chin": {"Param87": 0.0},
+    }
+
+    # 互斥的 prop 组合（设置一个时自动关闭另一个）
+    _PROP_MUTEX: dict[str, set[str]] = {
+        "hands_free": {"hands_on_chin", "pray", "microphone"},
+        "hands_on_chin": {"hands_free", "pray", "microphone"},
+        "pray": {"hands_free", "hands_on_chin", "microphone"},
+        "microphone": {"hands_free", "hands_on_chin", "pray"},
     }
 
     # 所有可能被 emotion 修改的参数（calm 时清零用）
@@ -467,6 +477,9 @@ class Live2DWidget(QOpenGLWidget):
         self._current_pose = "look_at_user"
         self._current_emotion = "calm"
         self._active_props.clear()
+        # 默认双手自然下垂，不要一直手托下巴
+        self._current_params["Param87"] = 1.0
+        self._active_props.add("hands_free")
 
     def paintGL(self) -> None:
         if not LIVE2D_AVAILABLE or not self.model:
@@ -955,8 +968,19 @@ class Live2DWidget(QOpenGLWidget):
         if name.endswith("_off"):
             base = name[:-4]
             self._active_props.discard(base)
+            # 关闭祈祷/麦克风后恢复默认双手自然下垂
+            if base in ("pray", "microphone"):
+                self._active_props.add("hands_free")
+                self._active_props.discard("hands_on_chin")
         else:
             self._active_props.add(name)
+            # 处理互斥 props
+            mutex = self._PROP_MUTEX.get(name)
+            if mutex:
+                for other in mutex:
+                    self._active_props.discard(other)
+                    # 如果互斥 prop 有对应的 _off 参数，也清掉
+                    self._active_props.discard(f"{other}_off")
 
         factor = self._calc_lerp_factor(duration_ms)
         values = self._PROP_MAP[name]
@@ -1045,6 +1069,8 @@ class Live2DWidget(QOpenGLWidget):
                 "pray": "双手合十",
                 "microphone": "拿着麦克风",
                 "trail_on": "身后拖尾飘动",
+                "hands_free": "双手自然下垂",
+                "hands_on_chin": "手托着下巴",
             }.get(p, p))
         return "、".join(names)
 
