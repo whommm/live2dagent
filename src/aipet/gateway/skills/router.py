@@ -16,7 +16,9 @@ class ToolRouter:
     def __init__(self, registry: SkillRegistry) -> None:
         self.registry = registry
 
-    async def call(self, full_name: str, arguments: dict[str, Any]) -> str:
+    async def call(
+        self, full_name: str, arguments: dict[str, Any], timeout: float = 30.0
+    ) -> str:
         """Execute a tool and return the result as a string."""
         result = self.registry.get_tool(full_name)
         if result is None:
@@ -26,12 +28,18 @@ class ToolRouter:
         try:
             check_permissions(func, skill.permissions)
             if asyncio.iscoroutinefunction(func):
-                output = await func(**arguments)
+                output = await asyncio.wait_for(func(**arguments), timeout=timeout)
             else:
-                output = func(**arguments)
+                # Run sync functions in thread pool to avoid blocking the loop
+                output = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, lambda: func(**arguments)),
+                    timeout=timeout,
+                )
             if isinstance(output, (dict, list)):
                 return json.dumps(output, ensure_ascii=False)
             return str(output)
+        except asyncio.TimeoutError:
+            return f"Error: Tool '{full_name}' execution timed out after {timeout}s."
         except SandboxViolationError as exc:
             return str(exc)
         except Exception as exc:
