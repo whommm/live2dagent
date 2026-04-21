@@ -227,6 +227,11 @@ class PetWindow(QWidget):
         self._setup_mouse_passthrough_timer()
         self._load_position()
 
+        # Live2D state reporter: send snapshot to Gateway every 3s
+        self._state_report_timer = QTimer(self)
+        self._state_report_timer.timeout.connect(self._send_live2d_state)
+        self._state_report_timer.start(3000)
+
     def _show_scale_hint(self, scale: float) -> None:
         """Show a transient scale percentage overlay."""
         percent = int(scale * 100)
@@ -314,6 +319,9 @@ class PetWindow(QWidget):
     def _wire_events(self) -> None:
         self.client.on("live2d.expression", self._on_expression)
         self.client.on("live2d.motion", self._on_motion)
+        self.client.on("live2d.pose", self._on_pose)
+        self.client.on("live2d.emotion", self._on_emotion)
+        self.client.on("live2d.prop", self._on_prop)
         self.client.on("tts.start", self._on_tts_start)
         self.client.on("tts.end", self._on_tts_end)
         self.client.on("chat.proactive", self._on_proactive)
@@ -327,6 +335,38 @@ class PetWindow(QWidget):
     def _on_motion(self, payload: dict[str, Any]) -> None:
         self.live2d_widget.play_motion(
             payload.get("motion", ""), 0, priority=payload.get("priority", 3)
+        )
+
+    def _on_pose(self, payload: dict[str, Any]) -> None:
+        self.live2d_widget.set_pose(
+            payload.get("pose", ""), duration_ms=payload.get("duration_ms", 500)
+        )
+
+    def _on_emotion(self, payload: dict[str, Any]) -> None:
+        self.live2d_widget.set_emotion(
+            payload.get("emotion", ""), duration_ms=payload.get("duration_ms", 500)
+        )
+
+    def _on_prop(self, payload: dict[str, Any]) -> None:
+        self.live2d_widget.set_prop(
+            payload.get("prop", ""), duration_ms=payload.get("duration_ms", 500)
+        )
+
+    def get_live2d_state(self) -> dict[str, Any]:
+        """Return current Live2D state snapshot for Gateway."""
+        return self.live2d_widget.get_state_snapshot()
+
+    def _send_live2d_state(self) -> None:
+        """Periodically report current Live2D state to Gateway."""
+        if not self.client.connected:
+            return
+        state = self.live2d_widget.get_state_snapshot()
+        asyncio.ensure_future(
+            self.client.send({
+                "type": "request",
+                "method": "live2d.state_report",
+                "payload": state,
+            })
         )
 
     def _on_tts_start(self, payload: dict[str, Any]) -> None:
@@ -648,6 +688,8 @@ class PetWindow(QWidget):
     def _quit(self) -> None:
         self._save_position()
         self._destroy_all_canvases()
+        if hasattr(self, "_state_report_timer") and self._state_report_timer is not None:
+            self._state_report_timer.stop()
         if hasattr(self, "_passthrough_timer") and self._passthrough_timer is not None:
             self._passthrough_timer.stop()
         self.live2d_widget.cleanup()
