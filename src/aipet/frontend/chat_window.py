@@ -357,7 +357,7 @@ class MessageBubble(QWidget):
         # Handle code blocks without language
         html = re.sub(
             r'<pre><code>(.*?)</code></pre>',
-            lambda m: _replace_block(re.match(r'<pre><code class="language-">(.*?)</code></pre>', '<pre><code class="language-">' + m.group(1) + '</code></pre>')),
+            lambda m: _replace_block(re.match(r'<pre><code class="language-([^"]*)">(.*?)</code></pre>', '<pre><code class="language-">' + m.group(1) + '</code></pre>', re.DOTALL)),
             html,
             flags=re.DOTALL,
         )
