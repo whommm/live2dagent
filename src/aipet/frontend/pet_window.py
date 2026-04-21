@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from aipet.frontend.client import GatewayClient
+from aipet.frontend.chat_trigger import ChatTriggerButton
 from aipet.frontend.live2d_widget import Live2DWidget
 from aipet.frontend.live_canvas import LiveCanvasWidget
 from aipet.frontend.theme import MaterialTheme
@@ -162,6 +164,8 @@ def _create_paw_icon() -> QIcon:
 class PetWindow(QWidget):
     """Borderless, transparent Live2D desktop pet window."""
 
+    _logger = logging.getLogger(__name__)
+
     def __init__(self, client: GatewayClient, parent: Any = None) -> None:
         super().__init__(parent)
         self.client = client
@@ -231,6 +235,40 @@ class PetWindow(QWidget):
         self._state_report_timer = QTimer(self)
         self._state_report_timer.timeout.connect(self._send_live2d_state)
         self._state_report_timer.start(3000)
+
+        # Quit overlay (glassmorphism saving mask)
+        self._quit_overlay = QWidget(self)
+        self._quit_overlay.setGeometry(self.rect())
+        self._quit_overlay.setStyleSheet(
+            f"background-color: {MaterialTheme.rgba(MaterialTheme.inverse_surface, 180)};"
+        )
+        self._quit_overlay.hide()
+        overlay_layout = QVBoxLayout(self._quit_overlay)
+        overlay_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.setSpacing(12)
+
+        self._quit_spinner = QLabel("⏳")
+        self._quit_spinner.setStyleSheet("font-size: 36px; border: none; background: transparent;")
+        self._quit_spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.addWidget(self._quit_spinner)
+
+        self._quit_title = QLabel("正在保存记忆…")
+        self._quit_title.setStyleSheet(
+            f"color: {MaterialTheme.inverse_on_surface}; font-size: 15px; font-weight: 600; border: none; background: transparent;"
+        )
+        self._quit_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.addWidget(self._quit_title)
+
+        self._quit_hint = QLabel("稍等片刻，就好啊 (づ´・ω・)づ")
+        self._quit_hint.setStyleSheet(
+            f"color: {MaterialTheme.rgba(MaterialTheme.inverse_on_surface, 200)}; font-size: 12px; border: none; background: transparent;"
+        )
+        self._quit_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.addWidget(self._quit_hint)
+
+        # Right-edge docked trigger button for quick chat access
+        self._chat_trigger = ChatTriggerButton(self)
+        self._chat_trigger.show()
 
     def _show_scale_hint(self, scale: float) -> None:
         """Show a transient scale percentage overlay."""
@@ -314,7 +352,7 @@ class PetWindow(QWidget):
                 "payload": {"model_name": model_name},
             })
         except Exception as exc:
-            print(f"[PetWindow] Failed to notify model change: {exc}")
+            self._logger.warning("Failed to notify model change: %s", exc)
 
     def _wire_events(self) -> None:
         self.client.on("live2d.expression", self._on_expression)
@@ -438,13 +476,13 @@ class PetWindow(QWidget):
         expression = payload.get("expression")
         motion = payload.get("motion")
         msg_id = payload.get("message_id", "")
-        print(f"[PetWindow] Received chat.proactive: content={content[:30]!r}, expression={expression}, motion={motion}")
+        self._logger.debug("Received chat.proactive: content=%r, expression=%s, motion=%s", content[:30], expression, motion)
 
         if expression:
-            print(f"[PetWindow] Setting expression: {expression}")
+            self._logger.debug("Setting expression: %s", expression)
             self.live2d_widget.set_expression(expression)
         if motion:
-            print(f"[PetWindow] Playing motion: {motion}")
+            self._logger.debug("Playing motion: %s", motion)
             self.live2d_widget.play_motion(motion, 0, priority=3)
 
         # Show as a canvas bubble
@@ -494,7 +532,15 @@ class PetWindow(QWidget):
         click_action = payload.get("click_action", "dismiss")
         width = payload.get("width", 280)
 
-        widget = LiveCanvasWidget(canvas_id, canvas_type, data)
+        # Compute dynamic max content height based on screen size so the
+        # canvas never grows beyond ~70 % of the available screen height.
+        screen = self.screen()
+        max_content_h = 400
+        if screen:
+            scr_h = screen.availableGeometry().height()
+            max_content_h = max(300, int(scr_h * 0.7) - 50)  # 50 px reserved for header + margins
+
+        widget = LiveCanvasWidget(canvas_id, canvas_type, data, max_content_height=max_content_h)
         widget.setProperty("click_action", click_action)
         widget.set_title(payload.get("title", ""), data.get("icon", ""))
         if canvas_type == "bubble":
@@ -523,7 +569,7 @@ class PetWindow(QWidget):
 
         self._canvases[canvas_id] = widget
         self._canvas_positions[canvas_id] = (x, y)
-        print(f"[PetWindow] Canvas shown: id={canvas_id}, type={canvas_type}, pos=({x},{y})")
+        self._logger.debug("Canvas shown: id=%s, type=%s, pos=(%d,%d)", canvas_id, canvas_type, x, y)
 
     def _calculate_canvas_position(
         self, widget: LiveCanvasWidget, position: str, custom_x: int | None, custom_y: int | None
@@ -573,7 +619,9 @@ class PetWindow(QWidget):
                     overlap = True
                     y = ey + eh + 8
                     if scr and y + widget.height() > scr.bottom():
-                        y = scr.top() + 20
+                        y = scr.bottom() - widget.height()
+                        if y < scr.top():
+                            y = scr.top() + 10
                     break
             if not overlap:
                 break
@@ -620,7 +668,7 @@ class PetWindow(QWidget):
             widget.hide()
             widget.deleteLater()
         self._canvas_positions.pop(canvas_id, None)
-        print(f"[PetWindow] Canvas destroyed: {canvas_id}")
+        self._logger.debug("Canvas destroyed: %s", canvas_id)
 
     def _destroy_all_canvases(self) -> None:
         for canvas_id in list(self._canvases.keys()):
@@ -681,11 +729,24 @@ class PetWindow(QWidget):
         if self.isVisible():
             self.hide()
             self._passthrough_timer.stop()
+            if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+                self._chat_trigger.hide()
         else:
             self.show()
             self._passthrough_timer.start(50)
+            if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+                self._chat_trigger.show()
 
     def _quit(self) -> None:
+        # Show quit overlay for a brief moment before actual quit
+        if hasattr(self, "_quit_overlay"):
+            self._quit_overlay.setGeometry(self.rect())
+            self._quit_overlay.show()
+            self._quit_overlay.raise_()
+        QTimer.singleShot(600, self._do_quit)
+
+    def _do_quit(self) -> None:
+        """Actual quit routine after overlay is shown."""
         self._save_position()
         self._destroy_all_canvases()
         if hasattr(self, "_state_report_timer") and self._state_report_timer is not None:
@@ -693,6 +754,10 @@ class PetWindow(QWidget):
         if hasattr(self, "_passthrough_timer") and self._passthrough_timer is not None:
             self._passthrough_timer.stop()
         self.live2d_widget.cleanup()
+        # Destroy edge trigger button
+        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+            self._chat_trigger.deleteLater()
+            self._chat_trigger = None
         # Actually close chat window on app quit
         if self.chat_window is not None:
             try:
