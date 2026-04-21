@@ -7,7 +7,12 @@ import json
 from typing import Any
 
 from aipet.gateway.skills.registry import SkillRegistry
-from aipet.gateway.skills.sandbox import SandboxViolationError, check_permissions
+from aipet.gateway.skills.sandbox import (
+    SandboxViolationError,
+    check_permissions,
+    install_sandbox,
+    uninstall_sandbox,
+)
 
 
 class ToolRouter:
@@ -25,6 +30,7 @@ class ToolRouter:
             return f"Error: Tool '{full_name}' not found."
         func, skill = result
 
+        guard = install_sandbox(skill.permissions, skill.skill_id)
         try:
             check_permissions(func, skill.permissions)
             if asyncio.iscoroutinefunction(func):
@@ -44,3 +50,5 @@ class ToolRouter:
             return str(exc)
         except Exception as exc:
             return f"Error executing tool: {exc}"
+        finally:
+            uninstall_sandbox(guard)
