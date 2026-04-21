@@ -57,7 +57,7 @@ class ChatTriggerButton(QWidget):
 
     def hit_test_global(self, global_pos: Any) -> bool:
         """Return whether *global_pos* (QPoint) is inside this button."""
-        return self.geometry().contains(self.mapFromGlobal(global_pos))
+        return self.rect().contains(self.mapFromGlobal(global_pos))
 
     # ------------------------------------------------------------------
     # Mouse interaction
