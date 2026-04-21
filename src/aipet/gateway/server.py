@@ -661,9 +661,9 @@ class Gateway:
         if result is None:
             return json.dumps({"error": f"Tool '{tool_name}' not found."}, ensure_ascii=False)
         func, skill = result
-        from aipet.gateway.skills.registry import _build_function_schema
+        from aipet.gateway.skills.schema import build_tool_schema
 
-        schema = _build_function_schema(
+        schema = build_tool_schema(
             skill.skill_id, tool_name.split(":", 1)[1], func, skill.description
         )
         return json.dumps(schema, ensure_ascii=False, indent=2)
