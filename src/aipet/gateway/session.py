@@ -112,3 +112,22 @@ class SessionManager:
         """Persist session metadata."""
         repo = await self._ensure_repo(session.id)
         await repo.save_session(session)
+
+    async def compact_session(
+        self, session_id: str, summary: str
+    ) -> Session | None:
+        """Replace early messages with a memory summary.
+
+        The summary is stored in the session's memory_summary field and
+        the oldest messages are removed from the in-memory list (but
+        remain in the database for history viewing).
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        session.memory_summary = summary
+        # Keep only the most recent 10 messages in memory for AI context
+        if len(session.messages) > 10:
+            session.messages = session.messages[-10:]
+        await self.save_session(session)
+        return session

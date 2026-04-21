@@ -340,6 +340,29 @@ class Gateway:
         except Exception as exc:
             self._logger.exception("TTS error")
 
+    async def _maybe_compact_session(self, session_id: str) -> None:
+        """Compress early messages into a memory summary when context grows too long."""
+        session = self.sessions.get(session_id)
+        if not session or len(session.messages) < 20:
+            return
+        from aipet.gateway.providers.ai import Message as AIMessage
+
+        older = session.messages[:-10]
+        prompt = "请将以下对话总结为 200 字以内的摘要，保留关键事实和用户信息：\n\n"
+        for m in older:
+            prompt += f"{m.role}: {m.content}\n"
+        try:
+            ai_provider = self.provider_manager.create_ai_provider()
+            summary = ""
+            async for chunk in ai_provider.chat([AIMessage(role="user", content=prompt)]):
+                summary += chunk.delta
+            summary = summary.strip()
+            if summary:
+                await self.sessions.compact_session(session_id, summary)
+                self._logger.info("Session compacted", session_id=session_id, summary=summary[:100])
+        except Exception:
+            self._logger.exception("Session compaction failed")
+
     def _build_ai_messages(
         self, session_id: str, include_tools: bool = True, include_live2d_tags: bool = False
     ) -> list[Any]:
@@ -351,6 +374,10 @@ class Gateway:
         system_parts = [f"# Soul\n{soul}"]
         if memory.strip():
             system_parts.append(f"# Memory\n{memory}")
+
+        session = self.sessions.get(session_id)
+        if session and session.memory_summary.strip():
+            system_parts.append(f"# Session Summary\n{session.memory_summary}")
 
         if include_tools:
             briefs = self.skills.list_tools_brief()
@@ -896,6 +923,7 @@ class Gateway:
             return
 
         session = await self._ensure_session(session_id)
+        await self._maybe_compact_session(session.id)
         augmented_content = self._augment_content_with_attachments(content, attachments)
         user_msg = Message(role="user", content=augmented_content, attachments=attachments)
         await self.sessions.add_message(session.id, user_msg)
