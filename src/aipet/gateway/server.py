@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 import websockets
 from websockets import ServerConnection
 
@@ -35,6 +36,7 @@ class Gateway:
     """AIPet Gateway WebSocket server."""
 
     def __init__(self, config: GatewayConfig | None = None) -> None:
+        self._logger = structlog.get_logger("gateway")
         self.config = config or GatewayConfig()
         self.bus = EventBus()
         self.store = StateStore(initial_state=AppState(), bus=self.bus)
@@ -122,12 +124,12 @@ class Gateway:
         has_key = bool(config.ai_api_key)
         provider = config.ai_provider
         model = config.ai_model
-        print(
-            f"[Gateway] Syncing config -> ProviderManager:"
-            f" provider={provider}, model={model}, has_key={has_key}"
+        self._logger.info(
+            "Syncing config to ProviderManager",
+            provider=provider, model=model, has_key=has_key,
         )
         if config.ai_provider == "echo" or not config.ai_api_key:
-            print("[Gateway] Skipping sync: provider is echo or no api_key")
+            self._logger.info("Skipping sync: provider is echo or no api_key")
             return
 
         from aipet.gateway.providers.manager import ProviderEntry
@@ -147,24 +149,24 @@ class Gateway:
                 models=[config.ai_model] if config.ai_model else [],
             )
             self.provider_manager.add_provider(entry)
-            print(f"[Gateway] Created new provider entry: {target_id}")
+            self._logger.info("Created new provider entry", target_id=target_id)
 
         updates: dict[str, Any] = {}
         updates["api_key"] = config.ai_api_key
         if config.ai_model:
             updates["models"] = [config.ai_model]
         self.provider_manager.update_provider(target_id, **updates)
-        print(f"[Gateway] Updated provider {target_id}: model={config.ai_model}")
+        self._logger.info("Updated provider", target_id=target_id, model=config.ai_model)
 
         if self.provider_manager.current_provider_id != target_id:
             self.provider_manager.set_current(target_id, config.ai_model)
-            print(f"[Gateway] Set current provider -> {target_id} / {config.ai_model}")
+            self._logger.info("Set current provider", target_id=target_id, model=config.ai_model)
         elif self.provider_manager.current_model != config.ai_model:
             self.provider_manager.current_model = config.ai_model
             self.provider_manager.save()
-            print(f"[Gateway] Updated current model -> {config.ai_model}")
+            self._logger.info("Updated current model", model=config.ai_model)
         else:
-            print(f"[Gateway] Provider already current: {target_id} / {config.ai_model}")
+            self._logger.info("Provider already current", target_id=target_id, model=config.ai_model)
 
     def _read_soul(self) -> str:
         """Read the soul.md system prompt."""
@@ -336,7 +338,7 @@ class Gateway:
             audio_path = await self.tts_provider.synthesize(cleaned_text)
             await self.audio_player.enqueue(audio_path, cleaned_text)
         except Exception as exc:
-            print(f"TTS error: {exc}")
+            self._logger.exception("TTS error")
 
     def _build_ai_messages(
         self, session_id: str, include_tools: bool = True, include_live2d_tags: bool = False
@@ -427,17 +429,20 @@ class Gateway:
                 )
 
         # Debug: print FULL messages sent to LLM (no truncation)
-        print("\n" + "=" * 70)
-        print(f"[LLM REQUEST] session={session_id}, tools={'yes' if include_tools else 'no'}, count={len(messages)}")
-        for i, msg in enumerate(messages):
-            role = getattr(msg, "role", "unknown")
-            content = getattr(msg, "content", "")
-            print(f"  --- [{i}] {role.upper()} ---")
-            print(content)
-            tc = getattr(msg, "tool_calls", None)
-            if tc:
-                print(f"  [tool_calls]: {json.dumps(tc, ensure_ascii=False)}")
-        print("=" * 70)
+        self._logger.debug(
+            "LLM request",
+            session_id=session_id,
+            tools_include=include_tools,
+            message_count=len(messages),
+            messages=[
+                {
+                    "role": getattr(m, "role", "unknown"),
+                    "content": (getattr(m, "content", "") or "")[:200],
+                    "tool_calls": getattr(m, "tool_calls", None),
+                }
+                for m in messages
+            ],
+        )
 
         return messages
 
@@ -516,15 +521,15 @@ class Gateway:
 
         parsed = raw_tool_calls if raw_tool_calls is not None else self._parse_tool_calls(full_text)
 
-        print(f"\n[TOOL RESOLVE] Enter. initial_text={full_text[:200]!r}")
-        print(f"[TOOL RESOLVE] parsed={parsed}")
+        self._logger.debug("Tool resolve enter", initial_text=full_text[:200])
+        self._logger.debug("Tool resolve parsed", parsed=parsed)
 
         for loop_idx in range(5):
             if not parsed:
-                print(f"[TOOL RESOLVE] Loop {loop_idx}: no parsed tool_calls, breaking")
+                self._logger.debug("Tool resolve no calls, breaking", loop_idx=loop_idx)
                 break
 
-            print(f"\n[TOOL RESOLVE] Loop {loop_idx}: executing {len(parsed)} tool_call(s)")
+            self._logger.debug("Tool resolve executing", loop_idx=loop_idx, count=len(parsed))
 
             # Serialize tool_calls into content so the model can see its own
             # previous tool calls in the conversation history.
@@ -536,7 +541,7 @@ class Gateway:
                 name = tc.get("name", "")
                 args = tc.get("arguments", {})
                 call_id = tc.get("id") or name
-                print(f"[TOOL EXEC] name={name}, args={args}")
+                self._logger.debug("Tool exec", name=name, args=args)
                 # Broadcast tool start
                 await self._broadcast(
                     {
@@ -558,7 +563,7 @@ class Gateway:
                         result = await self._handle_canvas_tool(name, args)
                     else:
                         result = await self.tool_router.call(name, args)
-                    print(f"[TOOL RESULT] {name} -> {result[:300] if isinstance(result, str) and len(result) > 300 else result!r}")
+                    self._logger.debug("Tool result", name=name, result=result[:300] if isinstance(result, str) and len(result) > 300 else result)
                     # Broadcast tool success
                     await self._broadcast(
                         {
@@ -574,7 +579,7 @@ class Gateway:
                     )
                 except Exception as exc:
                     result = f"Error executing tool: {exc}"
-                    print(f"[TOOL ERROR] {name} -> {result}")
+                    self._logger.error("Tool error", name=name, result=result)
                     # Broadcast tool error
                     await self._broadcast(
                         {
@@ -595,7 +600,7 @@ class Gateway:
                 )
                 await self.sessions.add_message(session_id, tool_msg)
 
-            print(f"[TOOL RESOLVE] Loop {loop_idx}: re-querying AI (include_tools=True)")
+            self._logger.debug("Re-querying AI", loop_idx=loop_idx)
             ai_messages = self._build_ai_messages(session_id, include_tools=True)
             full_text = ""
             next_raw_tool_calls: list[dict[str, Any]] | None = None
@@ -604,13 +609,13 @@ class Gateway:
                 if getattr(chunk, "tool_calls", None):
                     next_raw_tool_calls = chunk.tool_calls
 
-            print(f"[TOOL RESOLVE] Loop {loop_idx}: AI replied -> {full_text[:300]!r}")
-            print(f"[TOOL RESOLVE] Loop {loop_idx}: raw_tool_calls={next_raw_tool_calls}")
+            self._logger.debug("AI replied", loop_idx=loop_idx, reply=full_text[:300])
+            self._logger.debug("Raw tool calls", loop_idx=loop_idx, raw_tool_calls=next_raw_tool_calls)
 
             parsed = next_raw_tool_calls if next_raw_tool_calls is not None else self._parse_tool_calls(full_text)
-            print(f"[TOOL RESOLVE] Loop {loop_idx}: next parsed={parsed}")
+            self._logger.debug("Next parsed", loop_idx=loop_idx, parsed=parsed)
 
-        print(f"\n[TOOL RESOLVE] Done. final content={full_text[:300]!r}\n")
+        self._logger.debug("Tool resolve done", final_content=full_text[:300])
 
         return Message(
             id=message_id or str(uuid.uuid4()), role="assistant", content=full_text.strip()
@@ -694,7 +699,7 @@ class Gateway:
         client_id = str(uuid.uuid4())
         async with self._lock:
             self.clients[client_id] = websocket
-        print(f"[Gateway] Client connected: {client_id} ({websocket.remote_address})")
+        self._logger.info("Client connected", client_id=client_id, remote_address=str(websocket.remote_address))
 
         try:
             async for message in websocket:
@@ -710,7 +715,7 @@ class Gateway:
                     update={"clients": {k: v for k, v in s.clients.items() if k != client_id}}
                 )
             )
-            print(f"[Gateway] Client disconnected: {client_id}")
+            self._logger.info("Client disconnected", client_id=client_id)
 
     async def _process_message(self, client_id: str, raw_message: str | bytes) -> None:
         """Parse and dispatch incoming client messages."""
@@ -896,7 +901,7 @@ class Gateway:
         await self.sessions.add_message(session.id, user_msg)
         await self._maybe_auto_rename_session(session, content)
 
-        print(f"\n[CHAT STREAM] User: {content!r}")
+        self._logger.debug("Chat stream user message", content=content)
 
         assistant_msg = Message(role="assistant", content="")
         msg_id = assistant_msg.id
@@ -926,7 +931,7 @@ class Gateway:
         async for chunk in ai_provider.chat(ai_messages, tools=tools):
             full_text += chunk.delta
             if chunk.delta:
-                print(f"[CHAT STREAM] chunk: {chunk.delta!r}")
+                self._logger.debug("Chat stream chunk", delta=chunk.delta)
                 await self._broadcast(
                     {
                         "type": "event",
@@ -940,7 +945,7 @@ class Gateway:
                 )
             if getattr(chunk, "tool_calls", None):
                 raw_tool_calls = chunk.tool_calls
-                print(f"[CHAT STREAM] native tool_calls: {raw_tool_calls}")
+                self._logger.debug("Native tool_calls", raw_tool_calls=raw_tool_calls)
 
         await self._broadcast(
             {
@@ -959,7 +964,7 @@ class Gateway:
         if cleaned_text != final_msg.content:
             final_msg.content = cleaned_text
         await self._emit_live2d_tags(live2d_tags)
-        print(f"[CHAT STREAM] Final message: {final_msg.content[:300]!r}")
+        self._logger.debug("Final message", content=final_msg.content[:300])
         if final_msg.content or final_msg.tool_calls:
             await self.sessions.add_message(session.id, final_msg)
             # Always broadcast final cleaned text to replace streamed content (including tags)
@@ -1284,7 +1289,7 @@ class Gateway:
         """Update the current Live2D model so prompts can inject correct tags."""
         model_name = payload.get("model_name", "")
         await self.store.patch(current_live2d_model=model_name)
-        print(f"[Gateway] Live2D model set to: {model_name}")
+        self._logger.info("Live2D model set", model_name=model_name)
         await self._send(
             client_id,
             {
@@ -1368,7 +1373,7 @@ class Gateway:
     async def run(self) -> None:
         bind = self.config.gateway_bind
         port = self.config.gateway_port
-        print(f"[Gateway] Starting server on ws://{bind}:{port}")
+        self._logger.info("Starting server", bind=bind, port=port)
         async with websockets.serve(self.handle_client, bind, port):
             await asyncio.Future()  # run forever
 
@@ -1378,6 +1383,7 @@ class ProactiveChatService:
 
     def __init__(self, gateway: Gateway) -> None:
         self.gateway = gateway
+        self._logger = gateway._logger
         self._task: asyncio.Task[Any] | None = None
         self._stopped = asyncio.Event()
 
@@ -1395,11 +1401,11 @@ class ProactiveChatService:
 
     async def _loop(self) -> None:
         """Main loop: wait random interval, then trigger a proactive message."""
-        print(f"[ProactiveChat] Loop started. enabled={self.gateway.config.proactive_enabled}")
+        self._logger.info("ProactiveChat loop started", enabled=self.gateway.config.proactive_enabled)
         while not self._stopped.is_set():
             if not self.gateway.config.proactive_enabled:
                 if not getattr(self, "_disabled_logged", False):
-                    print("[ProactiveChat] Proactive disabled, waiting...")
+                    self._logger.info("Proactive disabled, waiting...")
                     self._disabled_logged = True
                 try:
                     await asyncio.wait_for(self._stopped.wait(), timeout=5.0)
@@ -1416,33 +1422,33 @@ class ProactiveChatService:
                 interval_min, interval_max = interval_max, interval_min
 
             interval = random.randint(interval_min, interval_max)
-            print(f"[ProactiveChat] Next trigger in {interval}s")
+            self._logger.info("ProactiveChat next trigger", interval=interval)
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=interval)
-                print("[ProactiveChat] Stop signal received, exiting loop")
+                self._logger.info("ProactiveChat stop signal received")
                 return
             except TimeoutError:
                 pass
 
-            print("[ProactiveChat] Triggering proactive message...")
+            self._logger.info("Triggering proactive message")
             await self._trigger()
 
     async def _trigger(self) -> None:
         """Generate and broadcast a proactive message."""
-        print("[ProactiveChat] _trigger() started")
+        self._logger.debug("ProactiveChat _trigger() started")
         if not self.gateway.clients:
-            print("[ProactiveChat] No clients connected, skipping")
+            self._logger.debug("No clients connected, skipping proactive")
             return
 
         # Skip if user was recently active (within 30 seconds)
         if time.time() - self.gateway._last_user_activity < 30:
-            print("[ProactiveChat] User is active, skipping proactive message")
+            self._logger.debug("User is active, skipping proactive message")
             return
 
         try:
             session_id = self.gateway.store.state.current_session_id or "main"
             session = await self.gateway._ensure_session(session_id)
-            print(f"[ProactiveChat] Session ensured: {session.id}")
+            self._logger.debug("Session ensured", session_id=session.id)
             from aipet.gateway.providers.ai import Message as AIMessage
             from aipet.gateway.providers.ai_echo import EchoProvider
             from aipet.gateway.providers.factory import create_ai_provider
@@ -1450,17 +1456,14 @@ class ProactiveChatService:
             ai_provider = self.gateway.provider_manager.create_ai_provider()
             name = ai_provider.name
             model_id = ai_provider.model_id
-            print(f"[ProactiveChat] ProviderManager created: {name} / {model_id}")
+            self._logger.debug("Provider created", name=name, model_id=model_id)
             # Fallback: if ProviderManager yields Echo but gateway.toml has a real key, use it
             if isinstance(ai_provider, EchoProvider) and self.gateway.config.ai_api_key:
-                print(
-                    "[ProactiveChat] ProviderManager returned Echo,"
-                    " falling back to GatewayConfig provider"
-                )
+                self._logger.debug("ProviderManager returned Echo, falling back to GatewayConfig provider")
                 ai_provider = create_ai_provider(self.gateway.config)
                 name = ai_provider.name
                 model_id = ai_provider.model_id
-                print(f"[ProactiveChat] Fallback provider: {name} / {model_id}")
+                self._logger.debug("Fallback provider", name=name, model_id=model_id)
 
             # Build messages from session context.
             # Include recent history so the proactive message feels connected
@@ -1490,21 +1493,18 @@ class ProactiveChatService:
                 )
             else:
                 messages.insert(0, AIMessage(role="system", content=instruction))
-            print(f"[ProactiveChat] Calling AI with {len(messages)} message(s)")
+            self._logger.debug("Calling AI", message_count=len(messages))
             full_text = ""
             chunk_count = 0
             async for chunk in ai_provider.chat(messages):
                 full_text += chunk.delta
                 chunk_count += 1
-            print(
-                f"[ProactiveChat] AI returned {chunk_count} chunk(s),"
-                f" raw text length={len(full_text)}"
-            )
+            self._logger.debug("AI returned chunks", chunk_count=chunk_count, text_length=len(full_text))
 
             content = full_text.strip()
-            print(f"[ProactiveChat] Final content: {content!r}")
+            self._logger.debug("Final content", content=content)
             if not content:
-                print("[ProactiveChat] Empty content, aborting broadcast")
+                self._logger.debug("Empty content, aborting broadcast")
                 return
 
             # Strip live2d tags from proactive messages too
@@ -1514,7 +1514,7 @@ class ProactiveChatService:
 
             msg = Message(role="assistant", content=content, source="proactive")
             await self.gateway.sessions.add_message(session.id, msg, update_session=False)
-            print(f"[ProactiveChat] Message saved to session {session.id}")
+            self._logger.debug("Message saved to session", session_id=session.id)
 
             # Broadcast any live2d tags from proactive message
             await self.gateway._emit_live2d_tags(live2d_tags)
@@ -1527,7 +1527,7 @@ class ProactiveChatService:
             expression = random.choice(expressions) if expressions else ""
             motion = random.choice(motions) if motions else ""
 
-            print("[ProactiveChat] Broadcasting chat.proactive event...")
+            self._logger.debug("Broadcasting chat.proactive event")
             await self.gateway._broadcast(
                 {
                     "type": "event",
@@ -1544,18 +1544,17 @@ class ProactiveChatService:
                     },
                 }
             )
-            print("[ProactiveChat] Broadcast complete")
+            self._logger.debug("Broadcast complete")
 
             if self.gateway.config.proactive_tts:
-                print("[ProactiveChat] Enqueuing TTS...")
+                self._logger.debug("Enqueuing TTS")
                 await self.gateway._play_tts(content)
-                print("[ProactiveChat] TTS enqueued")
+                self._logger.debug("TTS enqueued")
             else:
-                print("[ProactiveChat] TTS disabled, skipping")
+                self._logger.debug("TTS disabled, skipping")
         except Exception as exc:
             import traceback
-            print(f"[ProactiveChat] ERROR: {exc}")
-            traceback.print_exc()
+            self._logger.exception("ProactiveChat error")
             await self.gateway._broadcast(
                 {
                     "type": "event",
@@ -1568,6 +1567,11 @@ class ProactiveChatService:
 def main() -> int:
     """Entry point for the Gateway server."""
     ensure_directories()
+    from aipet.utils.log import configure_logging
+
+    config = GatewayConfig()
+    configure_logging(config.gateway_log_level)
+    logger = structlog.get_logger("gateway.server")
 
     async def _main() -> int:
         gateway = Gateway()
@@ -1575,7 +1579,7 @@ def main() -> int:
         try:
             await gateway.run()
         except KeyboardInterrupt:
-            print("\n[Gateway] Shutting down...")
+            logger.info("Gateway shutting down...")
         finally:
             await gateway.proactive.stop()
         await gateway.scheduler.stop()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aipet.utils.paths import get_user_data_dir
+
+_logger = logging.getLogger("aipet.gateway.scheduler")
 
 
 class ScheduledTask(BaseModel):
@@ -179,9 +182,9 @@ class TaskScheduler:
                     else:
                         task.next_run_at = now + timedelta(seconds=task.interval_seconds)
                 self._tasks[task.id] = task
-            print(f"[Scheduler] Loaded {len(self._tasks)} task(s) from {self._tasks_file}")
+            _logger.info("Loaded tasks", count=len(self._tasks), file=str(self._tasks_file))
         except Exception as exc:
-            print(f"[Scheduler] Failed to load tasks: {exc}")
+            _logger.exception("Failed to load tasks")
 
     def _save_tasks(self) -> None:
         """Save tasks to disk."""
@@ -190,7 +193,7 @@ class TaskScheduler:
             with self._tasks_file.open("w", encoding="utf-8") as f:
                 json.dump([t.to_dict() for t in self._tasks.values()], f, ensure_ascii=False, indent=2)
         except Exception as exc:
-            print(f"[Scheduler] Failed to save tasks: {exc}")
+            _logger.exception("Failed to save tasks")
 
     # ------------------------------------------------------------------
     # Public API

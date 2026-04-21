@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import toml
+
+_logger = logging.getLogger("aipet.gateway.providers.manager")
 from pydantic import BaseModel, Field
 
 from aipet.gateway.providers.ai import AIProvider
@@ -58,7 +61,7 @@ class ProviderManager:
                     self.current_model = first.models[0] if first.models else None
                     self.save()
             except Exception as exc:
-                print(f"[ProviderManager] Failed to load config: {exc}")
+                _logger.exception("Failed to load config")
                 self._init_defaults()
         else:
             self._init_defaults()
@@ -184,7 +187,7 @@ class ProviderManager:
         """Factory: create a runnable AI provider instance."""
         entry = self.get_provider(provider_id)
         if entry is None:
-            print(f"[ProviderManager] Provider '{provider_id}' not found, falling back to Echo")
+            _logger.warning("Provider not found, falling back to Echo", provider_id=provider_id)
             return EchoProvider()
 
         requested_pid = provider_id or self.current_provider_id
@@ -201,12 +204,12 @@ class ProviderManager:
             return EchoProvider(model_id=mid)
         elif entry.type == "gemini":
             if not entry.api_key:
-                print(f"[ProviderManager] Gemini '{entry.id}' has no api_key, falling back to Echo")
+                _logger.warning("Gemini provider has no api_key, falling back to Echo", entry_id=entry.id)
                 return EchoProvider(model_id=mid)
             return GeminiProvider(api_key=entry.api_key, model_id=mid)
         elif entry.type == "openai":
             if not entry.api_key:
-                print(f"[ProviderManager] OpenAI '{entry.id}' has no api_key, falling back to Echo")
+                _logger.warning("OpenAI provider has no api_key, falling back to Echo", entry_id=entry.id)
                 return EchoProvider(model_id=mid)
             return OpenAIProvider(
                 api_key=entry.api_key,
@@ -215,9 +218,9 @@ class ProviderManager:
             )
         elif entry.type == "anthropic":
             if not entry.api_key:
-                print(
-                    f"[ProviderManager] Anthropic '{entry.id}' has no api_key,"
-                    " falling back to Echo"
+                _logger.warning(
+                    "Anthropic provider has no api_key, falling back to Echo",
+                    entry_id=entry.id,
                 )
                 return EchoProvider(model_id=mid)
             return AnthropicProvider(api_key=entry.api_key, model_id=mid)

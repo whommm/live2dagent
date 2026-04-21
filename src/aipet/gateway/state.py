@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aipet.gateway.events import EventBus
+
+_logger = logging.getLogger("aipet.gateway.state")
 
 
 class ProviderStatus(BaseModel):
@@ -97,4 +100,4 @@ class StateStore:
             try:
                 await subscriber(snapshot)
             except Exception as exc:
-                print(f"StateStore subscriber error: {exc}")
+                _logger.exception("StateStore subscriber error")
