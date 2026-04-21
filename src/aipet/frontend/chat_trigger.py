@@ -1,12 +1,18 @@
-"""A slim edge-docked trigger button to toggle the chat window."""
+"""A slim edge-docked trigger button to toggle the chat window.
+
+This widget is a child of PetWindow (not a top-level window) so that it is
+immune to multi-window Z-order issues on Windows.  PetWindow's mouse-
+passthrough logic is extended to disable passthrough when the cursor is over
+this button, letting it receive hover and click events normally.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect
 from PySide6.QtGui import QPainter, QColor, QFont, QMouseEvent, QPaintEvent
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QWidget
 
 from aipet.frontend.theme import MaterialTheme
 
@@ -15,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class ChatTriggerButton(QWidget):
-    """A vertical strip docked to the right screen edge.
+    """A vertical strip docked to the right edge of the PetWindow.
 
     * Collapsed: a 6 px coloured strip (always visible).
     * Expanded (hover): a 40 px pill with a chat icon.
@@ -25,48 +31,33 @@ class ChatTriggerButton(QWidget):
     _COLLAPSED_W = 6
     _EXPANDED_W = 40
     _HEIGHT = 120
-    _OFFSET_FROM_EDGE = 0  # flush against the right edge
 
     def __init__(self, pet_window: PetWindow) -> None:
-        super().__init__(None)
+        super().__init__(pet_window)
         self._pet = pet_window
         self._is_expanded = False
         self._hover_animation: QPropertyAnimation | None = None
 
-        # Independent top-level tool window – stays on top.
-        # WA_ShowWithoutActivating is used instead of WindowDoesNotAcceptFocus
-        # because the latter causes Windows to ignore the window after other
-        # top-level windows in the same process are activated/closed.
-        self.setWindowFlags(
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
 
-        self._reposition()
-
-        # Re-position when the screen geometry changes (task-bar moves, DPI changes, etc.)
-        app = QApplication.instance()
-        if app is not None:
-            app.primaryScreen().availableGeometryChanged.connect(self._reposition)
+        # Position at the right edge of the parent (PetWindow covers the screen)
+        parent_w = pet_window.width()
+        parent_h = pet_window.height()
+        self.setGeometry(
+            parent_w - self._COLLAPSED_W,
+            parent_h // 2 - self._HEIGHT // 2,
+            self._EXPANDED_W,
+            self._HEIGHT,
+        )
 
     # ------------------------------------------------------------------
-    # Geometry / positioning
+    # Geometry helpers used by PetWindow
     # ------------------------------------------------------------------
 
-    def _reposition(self) -> None:
-        """Place the strip at the right edge of the primary screen."""
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            return
-        geo = screen.availableGeometry()
-        x = geo.right() - self._COLLAPSED_W + self._OFFSET_FROM_EDGE
-        y = geo.center().y() - self._HEIGHT // 2
-        self.setGeometry(x, y, self._EXPANDED_W, self._HEIGHT)
-        self.setFixedSize(self._EXPANDED_W, self._HEIGHT)
+    def hit_test_global(self, global_pos: Any) -> bool:
+        """Return whether *global_pos* (QPoint) is inside this button."""
+        return self.geometry().contains(self.mapFromGlobal(global_pos))
 
     # ------------------------------------------------------------------
     # Mouse interaction
