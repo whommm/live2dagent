@@ -90,44 +90,90 @@ class SkillRegistry:
         self._skills[skill_id] = SkillInfo(skill_id, description, brief, permissions, tools)
 
     def _parse_skill_md(self, content: str) -> tuple[str, str, list[str]]:
-        description = ""
-        brief = ""
-        permissions: list[str] = []
-        in_description = False
-        in_brief = False
-        in_permissions = False
-        for line in content.splitlines():
-            stripped = line.strip()
-            lower = stripped.lower()
-            if lower == "## description":
-                in_description = True
-                in_brief = False
-                in_permissions = False
-                continue
-            elif lower == "## brief":
-                in_brief = True
-                in_description = False
-                in_permissions = False
-                continue
-            elif lower == "## permissions":
-                in_permissions = True
-                in_description = False
-                in_brief = False
-                continue
-            elif stripped.startswith("## "):
-                in_description = False
-                in_brief = False
-                in_permissions = False
-                continue
+        """Parse SKILL.md supporting YAML frontmatter and legacy plain markdown."""
+        meta, markdown = self._extract_frontmatter(content)
+        description = meta.get("description", "")
+        brief = meta.get("brief", "")
+        permissions = meta.get("permissions", [])
 
-            if in_description:
-                description += line + "\n"
-            elif in_brief:
-                brief += line + "\n"
-            elif in_permissions and stripped.startswith("-"):
-                permissions.append(stripped.lstrip("-").strip())
+        # Fallback: legacy inline parsing for documents without frontmatter
+        if not description:
+            in_description = False
+            in_brief = False
+            in_permissions = False
+            for line in markdown.splitlines():
+                stripped = line.strip()
+                lower = stripped.lower()
+                if lower == "## description":
+                    in_description = True
+                    in_brief = False
+                    in_permissions = False
+                    continue
+                elif lower == "## brief":
+                    in_brief = True
+                    in_description = False
+                    in_permissions = False
+                    continue
+                elif lower == "## permissions":
+                    in_permissions = True
+                    in_description = False
+                    in_brief = False
+                    continue
+                elif stripped.startswith("## "):
+                    in_description = False
+                    in_brief = False
+                    in_permissions = False
+                    continue
 
+                if in_description:
+                    description += line + "\n"
+                elif in_brief:
+                    brief += line + "\n"
+                elif in_permissions and stripped.startswith("-"):
+                    permissions.append(stripped.lstrip("-").strip())
+
+        if isinstance(permissions, str):
+            permissions = [permissions]
         return description.strip(), brief.strip(), permissions
+
+    @staticmethod
+    def _extract_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+        """Extract simple key:value frontmatter between --- delimiters."""
+        if not content.strip().startswith("---"):
+            return {}, content
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return {}, content
+        raw = parts[1].strip()
+        markdown = parts[2].strip()
+        meta: dict[str, Any] = {}
+        current_key: str | None = None
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("-") and current_key is not None:
+                # Continuation of a list under current_key
+                value = stripped.lstrip("-").strip().strip('"').strip("'")
+                existing = meta.get(current_key)
+                if isinstance(existing, list):
+                    existing.append(value)
+                else:
+                    meta[current_key] = [value]
+                continue
+            if ":" in stripped:
+                key, val = stripped.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                if val.startswith('"') and val.endswith('"'):
+                    val = val[1:-1]
+                elif val.startswith("'") and val.endswith("'"):
+                    val = val[1:-1]
+                if val.startswith("[") and val.endswith("]"):
+                    val = [v.strip().strip('"').strip("'") for v in val[1:-1].split(",") if v.strip()]
+                meta[key] = val
+                current_key = key
+        return meta, markdown
 
     def list_tools(self) -> list[Tool]:
         """Generate OpenAI-style tool definitions."""

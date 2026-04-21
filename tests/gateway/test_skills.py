@@ -68,6 +68,28 @@ A demo skill.
     assert perms == ["network", "filesystem"]
 
 
+def test_parse_skill_md_frontmatter() -> None:
+    registry = SkillRegistry()
+    content = """---
+description: A frontmatter skill.
+brief: Frontmatter brief.
+permissions:
+  - network
+  - filesystem
+---
+
+## Description
+This should be ignored because frontmatter takes precedence.
+
+## Tools
+- `do_something()`
+"""
+    desc, brief, perms = registry._parse_skill_md(content)
+    assert desc == "A frontmatter skill."
+    assert brief == "Frontmatter brief."
+    assert perms == ["network", "filesystem"]
+
+
 def test_skill_registry_ensures_builtins(tmp_path: pytest.TempPathFactory) -> None:
     registry = SkillRegistry()
     with patch.object(registry, "BUILTINS_DIR", tmp_path / "builtins"):
