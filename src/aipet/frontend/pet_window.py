@@ -684,6 +684,9 @@ class PetWindow(QWidget):
                 self.chat_window.show()
                 self.chat_window.raise_()
                 self.chat_window.activateWindow()
+                # Keep the edge trigger above the chat window so it stays clickable
+                if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+                    self._chat_trigger.raise_()
                 return
             except RuntimeError:
                 self.chat_window = None
@@ -695,10 +698,16 @@ class PetWindow(QWidget):
         self.chat_window.show()
         self.chat_window.raise_()
         self.chat_window.activateWindow()
+        # Keep the edge trigger above the chat window so it stays clickable
+        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+            self._chat_trigger.raise_()
 
     def _on_chat_window_closed(self) -> None:
         # Window is hidden, not destroyed; keep reference for state preservation
-        pass
+        # Bring the edge trigger back to the top so it doesn't get buried.
+        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+            self._chat_trigger.raise_()
+            self._chat_trigger.activateWindow()
 
     def _show_provider_dialog(self) -> None:
         if self._provider_dialog is not None:
