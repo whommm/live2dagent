@@ -326,18 +326,78 @@ class Gateway:
                     }
                 )
 
+    @staticmethod
+    def _clean_for_tts(text: str) -> str:
+        """Clean text for TTS by removing formatting, actions, emoji, etc.
+
+        Ported from Hiyori's ttsPlayer.ts cleanForTTS().
+        """
+        import re
+
+        # 1. Remove parenthetical action descriptions
+        text = re.sub(r"（[^（）]*）", "", text)              # 全角括号
+        text = re.sub(r"\([^()]*\)", "", text)               # 半角括号
+        text = re.sub(r"【[^【】]*】", "", text)              # 方头括号
+        text = re.sub(r"「[^「」]*」", "", text)              # 日式引号
+        text = re.sub(r"『[^『』]*』", "", text)              # 日式双引号
+        text = re.sub(r"〈[^〈〉]*〉", "", text)              # 尖括号
+        text = re.sub(r"《[^《》]*》", "", text)              # 书名号
+
+        # 2. Remove asterisk-wrapped actions (AI common format)
+        text = re.sub(r"\*[^*\n]{1,30}\*", "", text)
+
+        # 3. Markdown → plain text
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)       # **bold**
+        text = re.sub(r"\*(.+?)\*", r"\1", text)           # *italic*
+        text = re.sub(r"`{1,3}[\s\S]*?`{1,3}", "", text)   # `code` / ```block```
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # [link](url)
+        text = re.sub(r"^#{1,6}\s", "", text, flags=re.MULTILINE)  # headings
+        text = re.sub(r"^[-*+]\s", "", text, flags=re.MULTILINE)   # list items
+        text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)      # quotes
+        text = text.replace("_", "").replace("~", "").replace("|", "")
+
+        # 4. Emoji + kaomoji + decorative symbols → comma separator
+        def _emoji_to_comma(m: re.Match) -> str:  # noqa: D401
+            return "，"
+
+        # Unicode emoji ranges (simplified but covers most)
+        text = re.sub(
+            r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+            r"\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
+            r"\U00002702-\U000027B0\U000024C2-\U0001F251"
+            r"\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F"
+            r"\U00002600-\U000026FF\U000026A0-\U000026FF]+",
+            _emoji_to_comma,
+            text,
+        )
+        # Kaomoji-like sequences
+        text = re.sub(r"[（()）≧≦∇OwO><;:XDd^_=+\-~·°▽○●□■♡♥★☆♪♫◇◆]{3,}", "，", text)
+        # Loose decorative symbols
+        text = re.sub(r"[♪♫♬♩★☆✦✧❤♡♥❥◇◆○●□■△▽→←↑↓↔]", "", text)
+
+        # 5. Clean up excess commas and whitespace
+        text = re.sub(r"[，,]{2,}", "，", text)
+        text = re.sub(r"([。！？!?…])，", r"\1", text)
+        text = re.sub(r"，([。！？!?…])", r"\1", text)
+        text = re.sub(r"^\s*[，,]\s*", "", text)
+        text = re.sub(r"\s*[，,]\s*$", "", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
     async def _play_tts(self, text: str) -> None:
         """Synthesize and enqueue TTS playback."""
         if not self.config.tts_auto_play or not text.strip():
             return
         # Strip any live2d tags as a safety net before TTS
         cleaned_text, _ = self._parse_live2d_tags(text)
+        # Further clean for TTS
+        cleaned_text = self._clean_for_tts(cleaned_text)
         if not cleaned_text.strip():
             return
         try:
             audio_path = await self.tts_provider.synthesize(cleaned_text)
             await self.audio_player.enqueue(audio_path, cleaned_text)
-        except Exception as exc:
+        except Exception:
             self._logger.exception("TTS error")
 
     async def _maybe_compact_session(self, session_id: str) -> None:
@@ -1433,7 +1493,7 @@ class ProactiveChatService:
         while not self._stopped.is_set():
             if not self.gateway.config.proactive_enabled:
                 if not getattr(self, "_disabled_logged", False):
-                    self._logger.info("Proactive disabled, waiting...")
+                    self._logger.debug("Proactive disabled, waiting...")
                     self._disabled_logged = True
                 try:
                     await asyncio.wait_for(self._stopped.wait(), timeout=5.0)
@@ -1450,7 +1510,7 @@ class ProactiveChatService:
                 interval_min, interval_max = interval_max, interval_min
 
             interval = random.randint(interval_min, interval_max)
-            self._logger.info("ProactiveChat next trigger", interval=interval)
+            self._logger.debug("ProactiveChat next trigger", interval=interval)
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=interval)
                 self._logger.info("ProactiveChat stop signal received")

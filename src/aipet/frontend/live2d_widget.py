@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import math
 import random
 import time
@@ -14,6 +15,8 @@ from PySide6.QtGui import QCursor, QMouseEvent, QWheelEvent
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from aipet.utils.paths import get_project_root
+
+_logger = logging.getLogger(__name__)
 
 LIVE2D_AVAILABLE = False
 live2d: Any = None
@@ -400,11 +403,11 @@ class Live2DWidget(QOpenGLWidget):
     def load_model(self, model_path: str) -> bool:
         """Hot-load a new Live2D model at runtime."""
         if not LIVE2D_AVAILABLE:
-            print("Live2D not available, cannot load model")
+            _logger.debug("Live2D not available, cannot load model")
             return False
         p = Path(model_path)
         if not p.exists():
-            print(f"Model path does not exist: {model_path}")
+            _logger.debug("Model path does not exist: %s", model_path)
             return False
 
         self.timer.stop()
@@ -427,13 +430,13 @@ class Live2DWidget(QOpenGLWidget):
                 self.model.SetScale(self.current_scale)
             self._parse_model_config()
             self._reset_params()
-            print(f"[Live2D] Loaded model: {self.model_path}")
+            _logger.info("Loaded model: %s", self.model_path)
             self.doneCurrent()
             self.timer.start(int(1000 / 60))
             self.update()
             return True
         except Exception as exc:
-            print(f"[Live2D] Failed to load model {model_path}: {exc}")
+            _logger.warning("Failed to load model %s: %s", model_path, exc)
             self.doneCurrent()
             self.timer.start(int(1000 / 60))
             return False
@@ -449,7 +452,7 @@ class Live2DWidget(QOpenGLWidget):
                 live2d.glInit()
 
             if not self.model_path or not Path(self.model_path).exists():
-                print(f"Live2D model not found: {self.model_path}")
+                _logger.debug("Live2D model not found: %s", self.model_path)
                 return
             self.model = live2d.LAppModel()
             self.model.LoadModelJson(self.model_path)
@@ -460,7 +463,7 @@ class Live2DWidget(QOpenGLWidget):
             self._reset_params()
             self.timer.start(int(1000 / 60))
         except Exception as exc:
-            print(f"Live2D init error: {exc}")
+            _logger.warning("Live2D init error: %s", exc)
 
     def _reset_params(self) -> None:
         """Reset all controlled params to defaults and clear targets."""
@@ -502,7 +505,7 @@ class Live2DWidget(QOpenGLWidget):
 
             self.model.Draw()
         except Exception as exc:
-            print(f"Live2D paint error: {exc}")
+            _logger.warning("Live2D paint error: %s", exc)
 
     def _update_parameters(self) -> None:
         """每帧执行：Lerp + 自主表演 + idle + 眨眼."""
@@ -816,7 +819,7 @@ class Live2DWidget(QOpenGLWidget):
             motions = files.get("Motions", {})
             self.available_motion_groups = {k: len(v) for k, v in motions.items()}
         except Exception as exc:
-            print(f"Model parse error: {exc}")
+            _logger.warning("Model parse error: %s", exc)
 
     # ------------------------------------------------------------------
     # 公开 API：姿态 / 表情 / 道具 控制
@@ -848,14 +851,14 @@ class Live2DWidget(QOpenGLWidget):
             # 调试：每 2 秒打印一次鼠标追踪状态
             if not hasattr(self, "_last_gaze_print") or time.time() - self._last_gaze_print > 2.0:
                 self._last_gaze_print = time.time()
-                print(
-                    f"[Live2D] Mouse gaze: cursor=({cursor.x()},{cursor.y()}), "
-                    f"head_global=({global_head.x()},{global_head.y()}), "
-                    f"gaze=({self._mouse_gaze_x:.2f},{self._mouse_gaze_y:.2f}), "
-                    f"head=({self._mouse_head_x:.1f},{self._mouse_head_y:.1f})"
+                _logger.debug(
+                    "Mouse gaze: cursor=(%d,%d), head_global=(%d,%d), gaze=(%.2f,%.2f), head=(%.1f,%.1f)",
+                    cursor.x(), cursor.y(), global_head.x(), global_head.y(),
+                    self._mouse_gaze_x, self._mouse_gaze_y,
+                    self._mouse_head_x, self._mouse_head_y,
                 )
         except Exception as exc:
-            print(f"[Live2D] Mouse gaze error: {exc}")
+            _logger.warning("Mouse gaze error: %s", exc)
 
     def _clear_auto_for_params(self, param_ids: set[str]) -> None:
         """AI 指令下发时，清除冲突的自主表演目标."""
@@ -872,7 +875,7 @@ class Live2DWidget(QOpenGLWidget):
         ]
         action = random.choice(actions)
         now = time.time()
-        print(f"[Live2D] Auto action: {action}")
+        _logger.debug("Auto action: %s", action)
 
         if action == "glance":
             target_x = random.choice([-0.7, 0.7])
@@ -913,7 +916,7 @@ class Live2DWidget(QOpenGLWidget):
     def set_pose(self, name: str, duration_ms: float = 500.0) -> None:
         """设置身体姿态（头部角度、眼神方向等）."""
         if name not in self._POSE_MAP:
-            print(f"[Live2D] Unknown pose: {name}")
+            _logger.debug("Unknown pose: %s", name)
             return
 
         self._current_pose = name
@@ -934,7 +937,7 @@ class Live2DWidget(QOpenGLWidget):
     def set_emotion(self, name: str, duration_ms: float = 500.0) -> None:
         """设置五官情绪表情."""
         if name not in self._EMOTION_MAP:
-            print(f"[Live2D] Unknown emotion: {name}")
+            _logger.debug("Unknown emotion: %s", name)
             return
 
         self._current_emotion = name
@@ -961,7 +964,7 @@ class Live2DWidget(QOpenGLWidget):
     def set_prop(self, name: str, duration_ms: float = 500.0) -> None:
         """设置道具/造型开关（翅膀、光环等）."""
         if name not in self._PROP_MAP:
-            print(f"[Live2D] Unknown prop: {name}")
+            _logger.debug("Unknown prop: %s", name)
             return
 
         # 记录活跃 props
@@ -1097,7 +1100,7 @@ class Live2DWidget(QOpenGLWidget):
             try:
                 self.model.SetExpression(name)
             except Exception as exc:
-                print(f"SetExpression error: {exc}")
+                _logger.warning("SetExpression error: %s", exc)
 
     def reset_expression(self) -> None:
         """兼容旧接口：恢复平静."""
@@ -1119,7 +1122,7 @@ class Live2DWidget(QOpenGLWidget):
             if hasattr(self.model, "StartMotion"):
                 self.model.StartMotion(group, index, actual_priority)
         except Exception as exc:
-            print(f"StartMotion error: {exc}")
+            _logger.warning("StartMotion error: %s", exc)
 
     def set_lipsync(self, value: float) -> None:
         """Set mouth openness for lip-sync (0.0 - 1.0)."""
