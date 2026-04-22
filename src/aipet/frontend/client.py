@@ -157,7 +157,7 @@ class GatewayClient:
             if not self._should_reconnect:
                 return
 
-            _logger.info("Connection lost, reconnecting", delay=self._reconnect_delay)
+            _logger.debug("Connection lost, reconnecting", delay=self._reconnect_delay)
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, self._max_reconnect_delay)
             try:

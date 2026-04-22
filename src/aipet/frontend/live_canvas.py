@@ -31,11 +31,12 @@ class LiveCanvasWidget(QWidget):
     closed = Signal(str)  # canvas_id
     size_changed = Signal(str)  # canvas_id
 
-    def __init__(self, canvas_id: str, canvas_type: str, data: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(self, canvas_id: str, canvas_type: str, data: dict[str, Any], parent: QWidget | None = None, max_content_height: int = 400) -> None:
         super().__init__(parent)
         self.canvas_id = canvas_id
         self.canvas_type = canvas_type
         self._data = data
+        self._max_content_height = max_content_height
         self._fade_timer: QTimer | None = None
         self._fade_value = 1.0
 
@@ -138,7 +139,7 @@ class LiveCanvasWidget(QWidget):
             doc.setPlainText(text)
             doc.setTextWidth(260)
             height = int(doc.size().height()) + 16
-            label.setFixedHeight(min(height, 400))
+            label.setFixedHeight(min(height, self._max_content_height))
         else:
             label.setFixedHeight(30)
         return label
@@ -148,7 +149,7 @@ class LiveCanvasWidget(QWidget):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         browser.setStyleSheet("QTextBrowser { background: transparent; border: none; padding: 0px; }")
         browser.setFrameStyle(0)
         browser.setHtml(self._text_to_html(content))
@@ -161,7 +162,7 @@ class LiveCanvasWidget(QWidget):
                 if vw > 0:
                     browser.document().setTextWidth(vw)
                 h = int(browser.document().size().height()) + 8
-                browser.setFixedHeight(max(min(h, 300), 60))
+                browser.setFixedHeight(max(min(h, self._max_content_height), 60))
                 self.size_changed.emit(self.canvas_id)
             except RuntimeError:
                 pass
@@ -244,8 +245,8 @@ class LiveCanvasWidget(QWidget):
         )
         list_widget.setMaximumWidth(280)
         calculated_height = len(items) * 28 + 4
-        list_widget.setMaximumHeight(min(calculated_height, 200))
-        list_widget.setMinimumHeight(min(max(calculated_height, 40), 200))
+        list_widget.setMaximumHeight(min(calculated_height, self._max_content_height))
+        list_widget.setMinimumHeight(min(max(calculated_height, 40), self._max_content_height))
         for item_text in items:
             item = QListWidgetItem(item_text)
             if checkable:
@@ -258,7 +259,7 @@ class LiveCanvasWidget(QWidget):
 
         browser = QTextBrowser()
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         browser.setStyleSheet(
             f"""
             QTextBrowser {{
@@ -285,7 +286,7 @@ class LiveCanvasWidget(QWidget):
                 if vw > 0:
                     browser.document().setTextWidth(vw)
                 h = int(browser.document().size().height()) + 20
-                browser.setFixedHeight(max(min(h, 250), 60))
+                browser.setFixedHeight(max(min(h, self._max_content_height), 60))
                 self.size_changed.emit(self.canvas_id)
             except RuntimeError:
                 pass
@@ -298,7 +299,7 @@ class LiveCanvasWidget(QWidget):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         browser.setStyleSheet("QTextBrowser { background: transparent; border: none; padding: 0px; }")
         browser.setFrameStyle(0)
         browser.setHtml(html)
@@ -311,7 +312,7 @@ class LiveCanvasWidget(QWidget):
                 if vw > 0:
                     browser.document().setTextWidth(vw)
                 h = int(browser.document().size().height()) + 8
-                browser.setFixedHeight(max(min(h, 300), 60))
+                browser.setFixedHeight(max(min(h, self._max_content_height), 60))
                 self.size_changed.emit(self.canvas_id)
             except RuntimeError:
                 pass

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -31,6 +32,7 @@ class ProviderDialog(QDialog):
     """Dialog to manage AI providers (add / edit / remove)."""
 
     providers_changed = Signal()
+    _logger = logging.getLogger(__name__)
 
     def __init__(self, client: GatewayClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -167,13 +169,13 @@ class ProviderDialog(QDialog):
             self._safe_set_status("")
             return True
         except TimeoutError:
-            print("[ProviderDialog] Failed to load providers: TimeoutError")
+            self._logger.warning("Failed to load providers: TimeoutError")
             self._safe_set_status(
                 "⚠️ Gateway connection timed out. You can still add providers manually."
             )
             return False
         except Exception as exc:
-            print(f"[ProviderDialog] Failed to load providers: {exc}")
+            self._logger.warning("Failed to load providers: %s", exc)
             self._safe_set_status(
                 f"⚠️ Failed to load providers: {exc}\nYou can still add providers manually."
             )
