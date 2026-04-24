@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -14,6 +15,22 @@ import websockets
 from websockets import ClientConnection
 
 _logger = structlog.get_logger("aipet.frontend.client")
+
+
+def fire_and_forget(coro: Any) -> None:
+    """Schedule a coroutine and log any unhandled exceptions."""
+    task = asyncio.ensure_future(coro)
+
+    def _on_done(t: asyncio.Task[Any]) -> None:
+        if not t.done():
+            return
+        exc = t.exception()
+        if exc is not None and not isinstance(exc, asyncio.CancelledError):
+            logging.getLogger("aipet.frontend.fire_and_forget").exception(
+                "Unhandled error in fire-and-forget task %s", t.get_name()
+            )
+
+    task.add_done_callback(_on_done)
 
 
 class GatewayClient:

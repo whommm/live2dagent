@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import sounddevice as sd
 import soundfile as sf
+
+_logger = logging.getLogger("aipet.gateway.media.audio_player")
 
 from aipet.gateway.media.lipsync import analyze_lipsync
 

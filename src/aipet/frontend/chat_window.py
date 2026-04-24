@@ -70,6 +70,7 @@ class MessageBubble(QWidget):
         self._is_error = is_error
         self._is_streaming = False
         self._stream_buffer = ""
+        self._tool_status_label: QLabel | None = None
         self._setup_ui(content, timestamp)
         self._apply_style()
         # NOTE: QGraphicsOpacityEffect is disabled on MessageBubble because
@@ -212,6 +213,16 @@ class MessageBubble(QWidget):
         self._toolbar_widget = toolbar_widget
         content_col.addWidget(toolbar_widget)
 
+        # Tool execution status label (hidden by default)
+        self._tool_status_label = QLabel()
+        self._tool_status_label.setFont(QFont(MaterialTheme.font_family, 9))
+        self._tool_status_label.setStyleSheet(
+            f"color: {MaterialTheme.primary}; border: none; background: transparent; padding: 2px 0px;"
+        )
+        self._tool_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._tool_status_label.hide()
+        content_col.addWidget(self._tool_status_label)
+
         if self.role == "user":
             self.avatar.setText("👤")
             row.addStretch()
@@ -301,7 +312,15 @@ class MessageBubble(QWidget):
         text = self.get_text()
         QApplication.clipboard().setText(text)
         self.copy_btn.setText("✅")
-        QTimer.singleShot(1500, lambda: self.copy_btn.setText("📋"))
+        QTimer.singleShot(1500, self._restore_copy_btn_text)
+
+    def _restore_copy_btn_text(self) -> None:
+        """Restore copy button text after a delay."""
+        try:
+            self.copy_btn.setText("📋")
+        except RuntimeError:
+            # Button was deleted before the timer fired
+            pass
 
     def _on_delete_clicked(self) -> None:
         self.delete_requested.emit(self.message_id)
@@ -472,6 +491,17 @@ class MessageBubble(QWidget):
             self.text_display.setHtml(self._markdown_to_html(final_text, text_color=color))
             # Defer height calculation until the document layout is ready.
             QTimer.singleShot(0, self._update_text_height)
+
+    def show_tool_status(self, text: str) -> None:
+        """Show a small status label below the bubble (e.g. '🔧 running xxx')."""
+        if self._tool_status_label is not None:
+            self._tool_status_label.setText(text)
+            self._tool_status_label.show()
+
+    def hide_tool_status(self) -> None:
+        """Hide the tool execution status label."""
+        if self._tool_status_label is not None:
+            self._tool_status_label.hide()
 
     def set_text(self, text: str) -> None:
         cleaned = self._clean_html_tags(self._strip_live2d_tags(text))
@@ -1114,6 +1144,7 @@ class ChatWindow(QWidget):
         self.client.on("chat.stream.start", self._on_stream_start)
         self.client.on("chat.stream.chunk", self._on_stream_chunk)
         self.client.on("chat.stream.end", self._on_stream_end)
+        self.client.on("chat.thinking", self._on_thinking)
         self.client.on("chat.proactive", self._on_chat_proactive)
         self.client.on("system.error", self._on_system_error)
         self.client.on("tool.start", self._on_tool_start)
@@ -1125,6 +1156,7 @@ class ChatWindow(QWidget):
         self.client.off("chat.stream.start", self._on_stream_start)
         self.client.off("chat.stream.chunk", self._on_stream_chunk)
         self.client.off("chat.stream.end", self._on_stream_end)
+        self.client.off("chat.thinking", self._on_thinking)
         self.client.off("chat.proactive", self._on_chat_proactive)
         self.client.off("system.error", self._on_system_error)
         self.client.off("tool.start", self._on_tool_start)
@@ -1622,14 +1654,11 @@ class ChatWindow(QWidget):
             self.show_system_message(f"Failed to create session: {exc}", is_error=True)
 
     async def _delete_session(self, session_id: str) -> None:
-        reply = QMessageBox.question(
-            self,
+        confirmed = await self._async_question(
             "Confirm Delete",
             "Are you sure you want to delete this session?\nThis action cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         try:
             resp = await self.client.request("session.delete", {"session_id": session_id})
@@ -1648,14 +1677,11 @@ class ChatWindow(QWidget):
         """Clear all messages in the current session."""
         if not self._current_session_id:
             return
-        reply = QMessageBox.question(
-            self,
+        confirmed = await self._async_question(
             "Confirm Clear",
             "Are you sure you want to clear all messages in this session?\nThis action cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         try:
             resp = await self.client.request("chat.clear", {"session_id": self._current_session_id})
@@ -1666,7 +1692,6 @@ class ChatWindow(QWidget):
 
     async def _rename_session_interactive(self, session_id: str) -> None:
         """Rename a session via a simple input dialog."""
-        from PySide6.QtWidgets import QInputDialog
         current_name = ""
         for i in range(self.session_list.count()):
             item = self.session_list.item(i)
@@ -1677,7 +1702,7 @@ class ChatWindow(QWidget):
                     if label:
                         current_name = label.property("session_name") or label.text()
                 break
-        name, ok = QInputDialog.getText(self, "Rename Session", "New name:", text=current_name)
+        name, ok = await self._async_get_text("Rename Session", "New name:", text=current_name)
         if ok and name.strip():
             try:
                 resp = await self.client.request("session.rename", {"session_id": session_id, "name": name.strip()})
@@ -1685,6 +1710,31 @@ class ChatWindow(QWidget):
                     await self._load_sessions()
             except Exception as exc:
                 self.show_system_message(f"Failed to rename session: {exc}", is_error=True)
+
+    async def _async_question(self, title: str, text: str) -> bool:
+        """Show a non-blocking QMessageBox and await the result."""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(text)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.No)
+        future = asyncio.get_running_loop().create_future()
+        msg_box.finished.connect(lambda result: future.set_result(result == QMessageBox.StandardButton.Yes))
+        msg_box.open()
+        return await future
+
+    async def _async_get_text(self, title: str, label: str, text: str = "") -> tuple[str, bool]:
+        """Show a non-blocking QInputDialog and await the result."""
+        from PySide6.QtWidgets import QInputDialog
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(label)
+        dialog.setTextValue(text)
+        future = asyncio.get_running_loop().create_future()
+        dialog.accepted.connect(lambda: future.set_result((dialog.textValue(), True)))
+        dialog.rejected.connect(lambda: future.set_result((dialog.textValue(), False)))
+        dialog.open()
+        return await future
 
     # ------------------------------------------------------------------
     # Providers
@@ -1905,16 +1955,40 @@ class ChatWindow(QWidget):
             return
         msg_id = payload.get("message_id", "")
         bubble = self._message_bubbles.get(msg_id)
+        has_tool_calls = payload.get("has_tool_calls", False)
         if bubble:
-            bubble.finish_streaming()
+            if has_tool_calls:
+                # Keep bubble in streaming state while tools execute
+                bubble.show_tool_status("🔧 正在分析...")
+            else:
+                bubble.finish_streaming()
         else:
             # Fallback: finish any streaming bubble
             for b in self._message_bubbles.values():
                 if getattr(b, "_is_streaming", False):
-                    b.finish_streaming()
+                    if has_tool_calls:
+                        b.show_tool_status("🔧 正在分析...")
+                    else:
+                        b.finish_streaming()
                     break
         self._hide_typing_indicator()
-        self._set_sending(False)
+        if not has_tool_calls:
+            self._set_sending(False)
+
+    def _on_thinking(self, payload: dict[str, Any]) -> None:
+        """Handle chat.thinking events (tool execution in progress)."""
+        if payload.get("session_id") != self._current_session_id:
+            return
+        msg_id = payload.get("message_id", "")
+        status = payload.get("status", "")
+        tool_names = payload.get("tool_names", [])
+        bubble = self._message_bubbles.get(msg_id)
+        if bubble and status == "executing_tools":
+            names_str = ", ".join(tool_names[:3])
+            if len(tool_names) > 3:
+                names_str += f" 等{len(tool_names)}个"
+            bubble.show_tool_status(f"🔧 正在执行: {names_str}...")
+            self._scroll_to_bottom()
 
     def _on_chat_proactive(self, payload: dict[str, Any]) -> None:
         self._logger.debug("Received chat.proactive: session=%s, content=%r", payload.get('session_id'), payload.get('content', '')[:30])
@@ -1952,6 +2026,11 @@ class ChatWindow(QWidget):
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, card)
         self._empty_state.hide()
         self._scroll_to_bottom()
+        # Update the latest assistant bubble to show which tool is running
+        for bubble in reversed(list(self._message_bubbles.values())):
+            if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
+                bubble.show_tool_status(f"🔧 正在执行: {name}...")
+                break
 
     def _on_tool_result(self, payload: dict[str, Any]) -> None:
         if payload.get("session_id") != self._current_session_id:
@@ -1961,20 +2040,38 @@ class ChatWindow(QWidget):
         if card:
             card.set_done(payload.get("result", ""))
             self._scroll_to_bottom()
+        # Update bubble status to show completion of this tool
+        for bubble in reversed(list(self._message_bubbles.values())):
+            if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
+                bubble.show_tool_status(f"🔧 等待下一步...")
+                break
 
     def _on_tool_error(self, payload: dict[str, Any]) -> None:
         if payload.get("session_id") != self._current_session_id:
             return
         tool_call_id = payload.get("tool_call_id", "")
+        name = payload.get("name", "tool")
+        error = payload.get("error", "Unknown error")
         card = self._tool_cards.get(tool_call_id)
         if card:
-            card.set_error(payload.get("error", "Unknown error"))
+            card.set_error(error)
             self._scroll_to_bottom()
+        # Show a visible system message so the user notices the failure
+        self.show_system_message(f"工具 {name} 执行失败: {error}", is_error=True)
+        # Also update the assistant bubble
+        for bubble in reversed(list(self._message_bubbles.values())):
+            if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
+                bubble.show_tool_status(f"❌ {name} 失败")
+                break
 
     def _add_assistant_bubble(self, text: str, msg_id: str = "", timestamp: str = "") -> None:
         ts = timestamp or datetime.now().strftime("%H:%M")
         if msg_id and msg_id in self._message_bubbles:
-            self._message_bubbles[msg_id].set_text(text)
+            bubble = self._message_bubbles[msg_id]
+            bubble.set_text(text)
+            bubble.finish_streaming()
+            bubble.hide_tool_status()
+            self._set_sending(False)
             return
         bubble = MessageBubble("assistant", text, timestamp=ts, message_id=msg_id, parent=self.messages_container)
         bubble.delete_requested.connect(self._on_bubble_delete_requested)

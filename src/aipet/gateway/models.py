@@ -17,6 +17,7 @@ class Message(BaseModel):
     content: str = ""
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
+    reasoning_content: str | None = None  # DeepSeek thinking mode
     attachments: list[str] = Field(default_factory=list)
     model: str | None = None
     tokens_used: int | None = None

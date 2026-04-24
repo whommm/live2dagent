@@ -724,6 +724,11 @@ class Live2DWidget(QOpenGLWidget):
                     if hits:
                         part_id = hits[0]
                 self._trigger_tap_reaction(part_id)
+            else:
+                # Drag finished — snap the pet to screen edges
+                parent = self.window()
+                if parent is not None and hasattr(parent, "_snap_to_edges"):
+                    parent._snap_to_edges()
             self._mouse_press_pos = None
             self._has_dragged = False
             event.accept()
@@ -1135,6 +1140,10 @@ class Live2DWidget(QOpenGLWidget):
 
     def cleanup(self) -> None:
         self.timer.stop()
+        if hasattr(self, "_mouse_track_timer") and self._mouse_track_timer is not None:
+            self._mouse_track_timer.stop()
+            self._mouse_track_timer.deleteLater()
+            self._mouse_track_timer = None
         if self.model is not None:
             with contextlib.suppress(Exception):
                 if hasattr(self.model, "release"):

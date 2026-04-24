@@ -182,7 +182,7 @@ class TaskScheduler:
                     else:
                         task.next_run_at = now + timedelta(seconds=task.interval_seconds)
                 self._tasks[task.id] = task
-            _logger.info("Loaded tasks", count=len(self._tasks), file=str(self._tasks_file))
+            _logger.info("Loaded %d tasks from %s", len(self._tasks), self._tasks_file)
         except Exception as exc:
             _logger.exception("Failed to load tasks")
 
