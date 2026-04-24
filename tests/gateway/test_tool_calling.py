@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from aipet.gateway.models import Message as SessionMessage
 from aipet.gateway.providers.ai import Chunk, Message, Tool
 from aipet.gateway.providers.ai_openai import OpenAIProvider
 from aipet.gateway.server import Gateway
@@ -84,7 +85,7 @@ async def test_openai_provider_stream_parses_tool_calls() -> None:
 
 
 def test_time_skill_get_current_time() -> None:
-    from aipet.gateway.skills.builtins.time import get_current_time
+    from builtin_skills.time import get_current_time
 
     result = get_current_time()
     assert len(result) == 19  # YYYY-MM-DD HH:MM:SS
@@ -93,7 +94,7 @@ def test_time_skill_get_current_time() -> None:
 
 
 def test_time_skill_get_time_in_city() -> None:
-    from aipet.gateway.skills.builtins.time import get_time_in_city
+    from builtin_skills.time import get_time_in_city
 
     result = get_time_in_city("Beijing")
     assert "Beijing" in result
@@ -103,8 +104,80 @@ def test_time_skill_get_time_in_city() -> None:
     assert "Unknown city" in unknown
 
 
+def test_filter_incomplete_tool_calls() -> None:
+    """Verify _filter_incomplete_tool_calls removes broken sequences."""
+    # Complete sequence: 2 tool_calls + 2 tools
+    complete = [
+        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}', tool_calls=[{"name": "a"}, {"name": "b"}]),
+        SessionMessage(role="tool", content="r1", tool_call_id="a"),
+        SessionMessage(role="tool", content="r2", tool_call_id="b"),
+    ]
+    filtered = Gateway._filter_incomplete_tool_calls(complete)
+    assert len(filtered) == 3
+
+    # Incomplete: 1 tool_call + 0 tools
+    incomplete = [
+        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]),
+    ]
+    filtered = Gateway._filter_incomplete_tool_calls(incomplete)
+    assert len(filtered) == 0
+
+    # Incomplete: 2 tool_calls + 1 tool
+    incomplete2 = [
+        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}', tool_calls=[{"name": "a"}, {"name": "b"}]),
+        SessionMessage(role="tool", content="r1", tool_call_id="a"),
+    ]
+    filtered = Gateway._filter_incomplete_tool_calls(incomplete2)
+    assert len(filtered) == 0
+
+    # Orphan tool (no preceding assistant with tool_calls)
+    orphan = [
+        SessionMessage(role="user", content="hi"),
+        SessionMessage(role="tool", content="r1", tool_call_id="a"),
+    ]
+    filtered = Gateway._filter_incomplete_tool_calls(orphan)
+    assert len(filtered) == 1
+    assert filtered[0].role == "user"
+
+    # Mixed: complete + incomplete
+    mixed = [
+        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]),
+        SessionMessage(role="tool", content="r1", tool_call_id="a"),
+        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "b"}]}', tool_calls=[{"name": "b"}]),
+    ]
+    filtered = Gateway._filter_incomplete_tool_calls(mixed)
+    assert len(filtered) == 2
+    assert filtered[0].role == "assistant"
+    assert filtered[1].role == "tool"
+
+
+def test_parse_dsml_tool_calls() -> None:
+    """Verify _parse_dsml_tool_calls extracts DeepSeek DSML format."""
+    dsml_text = (
+        '让我再深入看看核心文件～\n'
+        '<｜DSML｜tool_calls>\n'
+        '<｜DSML｜invoke name="file:read_file">\n'
+        '<｜DSML｜parameter name="file_path" string="true">src/aipet/gateway/skills/schema.py</｜DSML｜parameter>\n'
+        '</｜DSML｜invoke>\n'
+        '<｜DSML｜invoke name="file:read_file">\n'
+        '<｜DSML｜parameter name="file_path" string="true">src/aipet/gateway/skills/router.py</｜DSML｜parameter>\n'
+        '</｜DSML｜invoke>\n'
+        '</｜DSML｜tool_calls>'
+    )
+    parsed = Gateway._parse_dsml_tool_calls(dsml_text)
+    assert parsed is not None
+    assert len(parsed) == 2
+    assert parsed[0]["name"] == "file:read_file"
+    assert parsed[0]["arguments"]["file_path"] == "src/aipet/gateway/skills/schema.py"
+    assert parsed[1]["arguments"]["file_path"] == "src/aipet/gateway/skills/router.py"
+
+    # Non-DSML text should return None
+    assert Gateway._parse_dsml_tool_calls("Hello world") is None
+    assert Gateway._parse_dsml_tool_calls('{"tool_calls": []}') is None
+
+
 def test_random_skill_tools() -> None:
-    from aipet.gateway.skills.builtins.random import flip_coin, random_choice, random_number, roll_dice
+    from builtin_skills.random import flip_coin, random_choice, random_number, roll_dice
 
     assert flip_coin() in ("heads", "tails")
 

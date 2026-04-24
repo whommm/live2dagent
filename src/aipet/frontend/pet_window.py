@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from aipet.frontend.client import GatewayClient
+from aipet.frontend.client import GatewayClient, fire_and_forget
 from aipet.frontend.chat_trigger import ChatTriggerButton
 from aipet.frontend.live2d_widget import Live2DWidget
 from aipet.frontend.live_canvas import LiveCanvasWidget
@@ -341,7 +341,7 @@ class PetWindow(QWidget):
         if self.live2d_widget.load_model(model_path):
             self._refresh_model_menu()
             model_name = Path(model_path).parent.name
-            asyncio.ensure_future(self._notify_live2d_model(model_name))
+            fire_and_forget(self._notify_live2d_model(model_name))
 
     async def _notify_live2d_model(self, model_name: str) -> None:
         """Notify Gateway of the current Live2D model for tag injection."""
@@ -366,6 +366,20 @@ class PetWindow(QWidget):
         self.client.on("canvas.show", self._on_canvas_show)
         self.client.on("canvas.close", self._on_canvas_close)
         self.client.on("canvas.update", self._on_canvas_update)
+
+    def _unwire_events(self) -> None:
+        """Unregister all Gateway event handlers to prevent memory leaks."""
+        self.client.off("live2d.expression", self._on_expression)
+        self.client.off("live2d.motion", self._on_motion)
+        self.client.off("live2d.pose", self._on_pose)
+        self.client.off("live2d.emotion", self._on_emotion)
+        self.client.off("live2d.prop", self._on_prop)
+        self.client.off("tts.start", self._on_tts_start)
+        self.client.off("tts.end", self._on_tts_end)
+        self.client.off("chat.proactive", self._on_proactive)
+        self.client.off("canvas.show", self._on_canvas_show)
+        self.client.off("canvas.close", self._on_canvas_close)
+        self.client.off("canvas.update", self._on_canvas_update)
 
     def _on_expression(self, payload: dict[str, Any]) -> None:
         self.live2d_widget.set_expression(payload.get("expression", ""))
@@ -399,7 +413,7 @@ class PetWindow(QWidget):
         if not self.client.connected:
             return
         state = self.live2d_widget.get_state_snapshot()
-        asyncio.ensure_future(
+        fire_and_forget(
             self.client.send({
                 "type": "request",
                 "method": "live2d.state_report",
@@ -715,9 +729,9 @@ class PetWindow(QWidget):
         dialog.finished.connect(lambda: setattr(self, "_provider_dialog", None))
         if self.chat_window is not None:
             dialog.providers_changed.connect(
-                lambda: asyncio.ensure_future(self.chat_window._load_providers())
+                lambda: fire_and_forget(self.chat_window._load_providers())
             )
-        asyncio.ensure_future(self._run_provider_dialog(dialog))
+        fire_and_forget(self._run_provider_dialog(dialog))
 
     async def _run_provider_dialog(self, dialog: ProviderDialog) -> None:
         dialog.show()
@@ -749,7 +763,12 @@ class PetWindow(QWidget):
             self._state_report_timer.stop()
         if hasattr(self, "_passthrough_timer") and self._passthrough_timer is not None:
             self._passthrough_timer.stop()
+        self._unwire_events()
         self.live2d_widget.cleanup()
+        # Clean up the top-level chat trigger button
+        if hasattr(self, "_chat_trigger") and self._chat_trigger is not None:
+            self.removeEventFilter(self._chat_trigger)
+            self._chat_trigger.close()
         # Actually close chat window on app quit
         if self.chat_window is not None:
             try:
@@ -758,7 +777,7 @@ class PetWindow(QWidget):
                 pass
             self.chat_window = None
         with contextlib.suppress(Exception):
-            asyncio.ensure_future(self.client.disconnect())
+            fire_and_forget(self.client.disconnect())
         QApplication.quit()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -869,7 +888,68 @@ class PetWindow(QWidget):
         except Exception:
             pass
 
+    def _snap_to_edges(self) -> None:
+        """Snap the pet to screen edges when released near them.
+
+        Because PetWindow covers the entire screen, "snapping" means shifting
+        the window so the Live2D model peeks out from the edge instead of
+        floating in the middle of nowhere.
+        """
+        screen = self.screen()
+        if screen is None:
+            return
+        scr = screen.availableGeometry()
+
+        # Model head position inside the full-screen PetWindow
+        head = self.live2d_widget.get_model_head_pos()
+        global_head_x = self.x() + head.x()
+        global_head_y = self.y() + head.y()
+
+        s = self.live2d_widget.current_scale
+        viewport = min(self.width(), self.height())
+        visible_margin = max(80, int(viewport * s * 0.15))   # pixels to keep visible
+        snap_trigger = max(40, int(viewport * s * 0.08))      # distance that triggers snap
+        max_offscreen = visible_margin + 100                  # hard limit before we pull back
+
+        new_x, new_y = self.x(), self.y()
+        snapped = False
+
+        # ----- Horizontal edges -----
+        if global_head_x < scr.left() + snap_trigger:
+            new_x = scr.left() + visible_margin - head.x()
+            snapped = True
+        elif global_head_x > scr.right() - snap_trigger:
+            new_x = scr.right() - visible_margin - head.x()
+            snapped = True
+
+        # ----- Vertical edges -----
+        if global_head_y < scr.top() + snap_trigger:
+            new_y = scr.top() + visible_margin - head.y()
+            snapped = True
+        elif global_head_y > scr.bottom() - snap_trigger:
+            new_y = scr.bottom() - visible_margin - head.y()
+            snapped = True
+
+        # ----- Hard constraint: never let the model disappear completely -----
+        if global_head_x < scr.left() - max_offscreen:
+            new_x = scr.left() - max_offscreen - head.x()
+            snapped = True
+        elif global_head_x > scr.right() + max_offscreen:
+            new_x = scr.right() + max_offscreen - head.x()
+            snapped = True
+        if global_head_y < scr.top() - max_offscreen:
+            new_y = scr.top() - max_offscreen - head.y()
+            snapped = True
+        elif global_head_y > scr.bottom() + max_offscreen:
+            new_y = scr.bottom() + max_offscreen - head.y()
+            snapped = True
+
+        if snapped:
+            self.move(new_x, new_y)
+            self._save_position()
+
     def closeEvent(self, event: Any) -> None:
         self._save_position()
+        self._unwire_events()
         self.live2d_widget.cleanup()
         event.accept()

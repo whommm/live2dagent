@@ -90,18 +90,46 @@ This should be ignored because frontmatter takes precedence.
     assert perms == ["network", "filesystem"]
 
 
-def test_skill_registry_ensures_builtins(tmp_path: pytest.TempPathFactory) -> None:
+def test_skill_registry_loads_builtins_and_user_skills(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """Built-in skills are loaded directly from builtins/;
+    user skills in data/skills/ override them on name collision."""
     registry = SkillRegistry()
     with patch.object(registry, "BUILTINS_DIR", tmp_path / "builtins"):
+        # Set up a built-in skill
         (tmp_path / "builtins").mkdir()
         (tmp_path / "builtins" / "weather").mkdir()
         (tmp_path / "builtins" / "weather" / "SKILL.md").write_text("# W", encoding="utf-8")
         (tmp_path / "builtins" / "weather" / "__init__.py").write_text(
-            "tools = {}", encoding="utf-8"
+            'tools = {"get": lambda: "builtin"}', encoding="utf-8"
         )
 
+        # Set up a user skill that shadows the built-in one
         skills_dir = tmp_path / "skills"
-        registry._ensure_builtin_skills(skills_dir)
+        skills_dir.mkdir()
+        (skills_dir / "weather").mkdir()
+        (skills_dir / "weather" / "SKILL.md").write_text("# User W", encoding="utf-8")
+        (skills_dir / "weather" / "__init__.py").write_text(
+            'tools = {"get": lambda: "user"}', encoding="utf-8"
+        )
 
-        assert (skills_dir / "weather" / "SKILL.md").exists()
-        assert (skills_dir / "weather" / "__init__.py").exists()
+        with patch("aipet.gateway.skills.registry.get_user_data_dir", return_value=tmp_path):
+            registry.reload()
+
+        # User skill should override the built-in one
+        assert "weather" in registry._skills
+        assert registry._skills["weather"].source == "user"
+        tool_fn, _ = registry.get_tool("weather:get")
+        assert tool_fn() == "user"
+
+        # Built-in-only skill should still be present
+        (tmp_path / "builtins" / "calc").mkdir()
+        (tmp_path / "builtins" / "calc" / "__init__.py").write_text(
+            'tools = {"add": lambda a,b: a+b}', encoding="utf-8"
+        )
+        with patch("aipet.gateway.skills.registry.get_user_data_dir", return_value=tmp_path):
+            registry.reload()
+
+        assert "calc" in registry._skills
+        assert registry._skills["calc"].source == "builtin"

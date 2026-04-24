@@ -14,6 +14,7 @@ class Chunk(BaseModel):
     delta: str
     finish_reason: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+    reasoning_content: str | None = None
 
 
 class Message(BaseModel):
@@ -24,6 +25,7 @@ class Message(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
     name: str | None = None  # For tool role messages
+    reasoning_content: str | None = None  # DeepSeek thinking mode
 
 
 class Tool(BaseModel):

@@ -69,6 +69,9 @@ class OllamaProvider:
                 except Exception:
                     continue
 
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
     async def compact(self, messages: list[Message]) -> str:
         url = f"{self._base_url}/api/chat"
         payload = {

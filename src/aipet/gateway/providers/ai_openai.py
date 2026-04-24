@@ -20,7 +20,11 @@ class OpenAIProvider:
     """OpenAI-compatible API provider (works with DeepSeek, SiliconFlow, etc.)."""
 
     def __init__(
-        self, api_key: str, model_id: str = "gpt-4o", base_url: str = "https://api.openai.com/v1"
+        self,
+        api_key: str,
+        model_id: str = "gpt-4o",
+        base_url: str = "https://api.openai.com/v1",
+        extra_params: dict[str, Any] | None = None,
     ) -> None:
         self._api_key = api_key
         self._model_id = model_id
@@ -30,6 +34,7 @@ class OpenAIProvider:
             "Content-Type": "application/json",
         }
         self._client = httpx.AsyncClient(timeout=120.0)
+        self._extra_params = extra_params or {}
 
     @property
     def name(self) -> str:
@@ -52,11 +57,11 @@ class OpenAIProvider:
     ) -> dict[str, Any]:
         openai_messages: list[dict[str, Any]] = []
         for m in messages:
-            msg: dict[str, Any] = {"role": m.role, "content": m.content}
-            # Only include tool_calls when we are actually providing native tools.
-            # In pure text-mode (tools=None), strip tool_calls to prevent the model
-            # from switching back to native function-calling format.
-            if tools and m.tool_calls:
+            msg: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+            # Include tool_calls if the message has them, even in text-mode.
+            # Some providers (e.g. DeepSeek) require the assistant message to
+            # contain tool_calls when a subsequent tool role message is present.
+            if m.tool_calls:
                 formatted_calls = []
                 for tc in m.tool_calls:
                     if "function" in tc:
@@ -66,15 +71,24 @@ class OpenAIProvider:
                         if isinstance(args, dict):
                             args = _json.dumps(args)
                         formatted_calls.append({
-                            "id": tc.get("id", f"call_{uuid.uuid4().hex}"),
+                            "id": tc.get("id", tc.get("name", f"call_{uuid.uuid4().hex}")),
                             "type": "function",
                             "function": {"name": tc.get("name", ""), "arguments": args},
                         })
                 msg["tool_calls"] = formatted_calls
+                # When an assistant message carries native tool_calls, the
+                # content must be empty/null (OpenAI format requirement).
+                # DeepSeek V4 enforces this strictly.
+                if m.role == "assistant":
+                    msg["content"] = None
             if m.role == "tool" and m.tool_call_id:
                 msg["tool_call_id"] = m.tool_call_id
-            if m.role == "tool" and m.name:
-                msg["name"] = m.name
+            # Note: OpenAI allows 'name' on tool messages, but DeepSeek
+            # rejects it. Omit to stay compatible with all providers.
+            # if m.role == "tool" and m.name:
+            #     msg["name"] = m.name
+            if m.reasoning_content is not None:
+                msg["reasoning_content"] = m.reasoning_content
             openai_messages.append(msg)
 
         payload: dict[str, Any] = {
@@ -88,6 +102,19 @@ class OpenAIProvider:
             payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = [t.model_dump() for t in tools]
+        payload.update(self._extra_params)
+        # Debug: log tool_call_id pairing
+        for idx, om in enumerate(openai_messages):
+            if om.get("role") == "assistant" and om.get("tool_calls"):
+                _logger.info(
+                    "Payload assistant[%d] tool_call_ids: %s",
+                    idx,
+                    [tc.get("id") for tc in om["tool_calls"]],
+                )
+            elif om.get("role") == "tool":
+                _logger.info(
+                    "Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id")
+                )
         return payload
 
     async def chat(
@@ -108,9 +135,26 @@ class OpenAIProvider:
                 async with self._client.stream(
                     "POST", url, headers=self._headers, json=payload
                 ) as response:
-                    response.raise_for_status()
+                    # Raise early, before the stream is consumed, so we can
+                    # read the error body reliably on 4xx/5xx.
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        body = await response.aread()
+                        decoded = body.decode("utf-8", errors="replace")
+                        _logger.error(
+                            "HTTP %d from AI provider: %s",
+                            exc.response.status_code,
+                            decoded,
+                        )
+                        raise httpx.HTTPStatusError(
+                            f"{exc.response.status_code}: {decoded}",
+                            request=exc.request,
+                            response=exc.response,
+                        ) from exc
                     # Accumulate tool calls across chunks (arguments may be streamed in pieces)
                     tool_call_accumulator: dict[int, dict[str, Any]] = {}
+                    reasoning_content = ""
                     async for line in response.aiter_lines():
                         line = line.strip()
                         if not line or line == "data: [DONE]":
@@ -124,6 +168,9 @@ class OpenAIProvider:
                                 continue
                             delta = choices[0].get("delta", {})
                             content = delta.get("content") or ""
+                            reasoning = delta.get("reasoning_content") or ""
+                            if reasoning:
+                                reasoning_content += reasoning
                             finish = choices[0].get("finish_reason")
 
                             # Accumulate tool calls
@@ -170,26 +217,38 @@ class OpenAIProvider:
                                         "name": tc.get("name", ""),
                                         "arguments": args,
                                     })
-                                yield Chunk(delta="", finish_reason="tool_calls", tool_calls=parsed_calls)
+                                yield Chunk(delta="", finish_reason="tool_calls", tool_calls=parsed_calls, reasoning_content=reasoning_content)
                                 return
 
                             if finish and finish != "tool_calls":
-                                yield Chunk(delta="", finish_reason=finish)
+                                yield Chunk(delta="", finish_reason=finish, reasoning_content=reasoning_content)
                                 return
                         except Exception:
                             continue
                 return
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 400 and attempt < 2:
-                    try:
-                        body = await exc.response.aread()
-                        decoded = body.decode('utf-8', errors='replace')
-                        _logger.warning("400 error", attempt=attempt + 1, response=decoded)
-                        _logger.debug("Payload", payload=payload)
-                    except Exception:
-                        pass
-                    continue
+                if exc.response.status_code == 400:
+                    # Body may have already been read inside the stream block.
+                    # The decoded error is embedded in the exception message.
+                    exc_msg = str(exc)
+                    decoded = exc_msg.split(": ", 1)[-1] if ": " in exc_msg else exc_msg
+
+                    msg_summary = " | ".join(
+                        f"{m.get('role')}({len(m.get('content') or '')}c{'+tc' if m.get('tool_calls') else ''})"
+                        for m in payload.get("messages", [])
+                    )
+                    _logger.error(
+                        "400 error from AI provider (attempt=%d): %s | messages: %s",
+                        attempt + 1,
+                        decoded,
+                        msg_summary,
+                    )
+                    if attempt < 2:
+                        continue
                 raise
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def compact(self, messages: list[Message]) -> str:
         url = f"{self._base_url}/chat/completions"
@@ -200,7 +259,7 @@ class OpenAIProvider:
                     "role": "system",
                     "content": "Summarize the following conversation into one short paragraph.",
                 },
-                *[{"role": m.role, "content": m.content} for m in messages],
+                * [{"role": m.role, "content": m.content or ""} for m in messages],
             ],
             "stream": False,
             "max_tokens": 256,

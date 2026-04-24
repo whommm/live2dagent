@@ -30,6 +30,7 @@ class ProviderEntry(BaseModel):
     base_url: str | None = None  # Critical for OpenAI-compatible custom endpoints
     models: list[str] = Field(default_factory=list)
     is_custom: bool = False  # True for user-added OpenAI-compatible providers
+    extra_params: dict[str, Any] = Field(default_factory=dict)  # e.g. thinking, reasoning_effort
 
 
 class ProviderManager:
@@ -215,6 +216,7 @@ class ProviderManager:
                 api_key=entry.api_key,
                 model_id=mid,
                 base_url=entry.base_url or "https://api.openai.com/v1",
+                extra_params=entry.extra_params,
             )
         elif entry.type == "anthropic":
             if not entry.api_key:

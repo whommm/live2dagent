@@ -28,7 +28,7 @@ from aipet.gateway.scheduler import TaskScheduler, set_gateway
 from aipet.gateway.session import SessionManager
 from aipet.gateway.skills.registry import SkillRegistry
 from aipet.gateway.skills.router import ToolRouter
-from aipet.gateway.state import AppState, ClientInfo, StateStore
+from aipet.gateway.state import AppState, ClientInfo, ProviderStatus, StateStore
 from aipet.utils.paths import ensure_directories, get_config_dir, get_project_root
 
 
@@ -105,11 +105,11 @@ class Gateway:
         provider = self.provider_manager.get_provider()
         if provider:
             await self.store.patch(
-                ai_provider_status=type("obj", (object,), {
-                    "name": provider.name,
-                    "healthy": True,
-                    "last_error": None,
-                })()
+                ai_provider_status=ProviderStatus(
+                    name=provider.name,
+                    healthy=True,
+                    last_error=None,
+                )
             )
         # Set default Live2D model for tag injection
         await self.store.patch(current_live2d_model=self.config.live2d_default_model)
@@ -423,6 +423,39 @@ class Gateway:
         except Exception:
             self._logger.exception("Session compaction failed")
 
+    @staticmethod
+    def _filter_incomplete_tool_calls(messages: list[Any]) -> list[Any]:
+        """Remove assistant messages with unfulfilled tool_calls and orphan tool messages.
+
+        DeepSeek (and other strict providers) require that every assistant message
+        with ``tool_calls`` be followed by the same number of ``tool`` role messages
+        responding to each ``tool_call_id``. Incomplete sequences cause 400 errors.
+        """
+        result: list[Any] = []
+        skip_until = -1
+        for i, msg in enumerate(messages):
+            if i <= skip_until:
+                continue
+            if msg.role == "assistant" and msg.tool_calls:
+                expected = len(msg.tool_calls)
+                actual = 0
+                j = i + 1
+                while j < len(messages) and messages[j].role == "tool":
+                    actual += 1
+                    j += 1
+                if actual >= expected:
+                    result.append(msg)
+                    for k in range(i + 1, j):
+                        result.append(messages[k])
+                else:
+                    skip_until = j - 1
+            elif msg.role == "tool":
+                # Orphan tool message – skip
+                continue
+            else:
+                result.append(msg)
+        return result
+
     def _build_ai_messages(
         self, session_id: str, include_tools: bool = True, include_live2d_tags: bool = False
     ) -> list[Any]:
@@ -457,9 +490,15 @@ class Gateway:
                     "Parameters:\n"
                     '  - tool_name: string (required) — 工具全名，格式为 skill_id:tool_name，如 weather:get_weather\n'
                     "\n"
-                    "When you need to use one or more tools, you MUST respond with ONLY a JSON object "
-                    'in this exact format, with no other text before or after:\n'
-                    '{"tool_calls": [{"name": "skill_id:tool_name", "arguments": {"param": "value"}}]}\n\n'
+                    "--- TOOL CALLING RULES (STRICT) ---\n"
+                    "When you need to use one or more tools, you MUST output EXACTLY ONE raw JSON object.\n"
+                    "NO chitchat, NO greetings, NO explanations, NO thinking out loud, NO markdown.\n"
+                    "NOT a single character before or after the JSON.\n\n"
+                    'Required format: {"tool_calls": [{"name": "skill_id:tool_name", "arguments": {"param": "value"}}]}\n\n'
+                    "WRONG: '让我查一下～' followed by JSON\n"
+                    "WRONG: JSON wrapped in ```code blocks```\n"
+                    "WRONG: XML / DSML tags like <｜DSML｜tool_calls>\n"
+                    "RIGHT:  Only the raw JSON object itself, nothing else.\n\n"
                     "Example flow:\n"
                     '  User: "北京天气怎么样？"\n'
                     '  Assistant: {"tool_calls": [{"name": "system:get_tool_schema", "arguments": {"tool_name": "weather:get_weather"}}]}\n'
@@ -505,13 +544,15 @@ class Gateway:
 
         session = self.sessions.get(session_id)
         if session:
-            for msg in session.messages:
+            filtered = self._filter_incomplete_tool_calls(session.messages)
+            for msg in filtered:
                 messages.append(
                     AIMessage(
                         role=msg.role,
                         content=msg.content,
                         tool_calls=msg.tool_calls,
                         tool_call_id=msg.tool_call_id,
+                        reasoning_content=msg.reasoning_content,
                     )
                 )
 
@@ -572,17 +613,33 @@ class Gateway:
         if result is not None:
             return result
 
-        # 3. Extract JSON by brace/bracket matching
+        # 3. Parse DeepSeek DSML format
+        # DeepSeek sometimes outputs its native DSML tool-calling syntax
+        # instead of the requested JSON. We extract it as a fallback.
+        dsml_parsed = self._parse_dsml_tool_calls(text)
+        if dsml_parsed is not None:
+            return dsml_parsed
+
+        # 4. Extract a {"tool_calls": [...]} object that appears embedded
+        #    inside prose.  Some models prepend/append chitchat around the
+        #    JSON instead of outputting ONLY the JSON.  We scan for the
+        #    "tool_calls" key and then balance braces from its opening '{'.
+        #    This is narrower than the old "any brace anywhere" scan, so
+        #    examples embedded in the *middle* of long explanations are
+        #    less likely to trigger spurious executions.
         import re
 
-        for start_char, end_char in [("{", "}"), ("[", "]")]:
-            for match in re.finditer(re.escape(start_char), text):
-                start = match.start()
+        tc_marker = re.search(r'"tool_calls"\s*:', text)
+        if tc_marker:
+            start = tc_marker.start()
+            while start > 0 and text[start] != "{":
+                start -= 1
+            if text[start] == "{":
                 depth = 1
                 for i in range(start + 1, len(text)):
-                    if text[i] == start_char:
+                    if text[i] == "{":
                         depth += 1
-                    elif text[i] == end_char:
+                    elif text[i] == "}":
                         depth -= 1
                         if depth == 0:
                             result = _try_parse(text[start : i + 1])
@@ -592,18 +649,64 @@ class Gateway:
 
         return None
 
+    @staticmethod
+    def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
+        """Parse DeepSeek's DSML tool-calling syntax as a fallback.
+
+        DeepSeek may output:
+            <｜DSML｜tool_calls>
+            <｜DSML｜invoke name="skill:tool">
+            <｜DSML｜parameter name="param" string="true">value</｜DSML｜parameter>
+            </｜DSML｜invoke>
+            </｜DSML｜tool_calls>
+        We extract the calls into our standard JSON shape.
+        """
+        import re
+
+        if "<｜DSML｜invoke" not in text:
+            return None
+
+        invoke_pat = re.compile(r'<｜DSML｜invoke\s+name="([^"]+)">(.*?)</｜DSML｜invoke>', re.DOTALL)
+        param_pat = re.compile(r'<｜DSML｜parameter\s+name="([^"]+)"(?:\s+\w+="[^"]*")*>([^<]*)</｜DSML｜parameter>', re.DOTALL)
+
+        calls: list[dict[str, Any]] = []
+        for inv in invoke_pat.finditer(text):
+            name = inv.group(1)
+            args: dict[str, Any] = {}
+            for pm in param_pat.finditer(inv.group(2)):
+                arg_name = pm.group(1)
+                arg_val = pm.group(2).strip()
+                # Try numeric / bool coercion
+                if arg_val.lower() == "true":
+                    args[arg_name] = True
+                elif arg_val.lower() == "false":
+                    args[arg_name] = False
+                else:
+                    try:
+                        if "." in arg_val:
+                            args[arg_name] = float(arg_val)
+                        else:
+                            args[arg_name] = int(arg_val)
+                    except ValueError:
+                        args[arg_name] = arg_val
+            calls.append({"name": name, "arguments": args})
+
+        return calls if calls else None
+
     async def _resolve_tool_calls(
         self,
         session_id: str,
         initial_text: str,
         message_id: str | None = None,
         raw_tool_calls: list[dict[str, Any]] | None = None,
+        reasoning_content: str = "",
     ) -> Message:
         """If the AI response contains tool calls, execute them and get the final reply."""
 
         ai_provider = self.provider_manager.create_ai_provider()
-        # Force text-mode: never pass native tool schemas to the provider
-        tools = None
+        # Pass native tool schemas so providers that enforce strict message
+        # sequencing (e.g. DeepSeek V4) accept tool role messages.
+        tools = self.skills.list_tools() if self.skills else []
         full_text = initial_text.strip()
 
         parsed = raw_tool_calls if raw_tool_calls is not None else self._parse_tool_calls(full_text)
@@ -611,6 +714,8 @@ class Gateway:
         self._logger.debug("Tool resolve enter", initial_text=full_text[:200])
         self._logger.debug("Tool resolve parsed", parsed=parsed)
 
+        loop_idx = -1
+        reasoning_text = ""
         for loop_idx in range(5):
             if not parsed:
                 self._logger.debug("Tool resolve no calls, breaking", loop_idx=loop_idx)
@@ -618,16 +723,39 @@ class Gateway:
 
             self._logger.debug("Tool resolve executing", loop_idx=loop_idx, count=len(parsed))
 
+            # Notify frontend that the assistant is thinking / executing tools
+            tool_names = [tc.get("name", "tool") for tc in parsed]
+            await self._broadcast(
+                {
+                    "type": "event",
+                    "method": "chat.thinking",
+                    "payload": {
+                        "session_id": session_id,
+                        "message_id": message_id,
+                        "status": "executing_tools",
+                        "tool_names": tool_names,
+                    },
+                }
+            )
+
+            # Ensure every tool call has a unique id BEFORE creating the
+            # assistant message, so the id is persisted together with it.
+            # (session persistence may deep-copy messages, so mutating
+            # parsed after add_message won't affect the saved object.)
+            for tc in parsed:
+                if not tc.get("id"):
+                    tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
+
             # Serialize tool_calls into content so the model can see its own
             # previous tool calls in the conversation history.
             tool_calls_json = json.dumps({"tool_calls": parsed}, ensure_ascii=False)
-            assistant_msg = Message(role="assistant", content=tool_calls_json, tool_calls=parsed)
+            assistant_msg = Message(role="assistant", content=tool_calls_json, tool_calls=parsed, reasoning_content=reasoning_content)
             await self.sessions.add_message(session_id, assistant_msg)
 
             for tc in parsed:
                 name = tc.get("name", "")
                 args = tc.get("arguments", {})
-                call_id = tc.get("id") or name
+                call_id = tc["id"]
                 self._logger.debug("Tool exec", name=name, args=args)
                 # Broadcast tool start
                 await self._broadcast(
@@ -690,22 +818,29 @@ class Gateway:
             self._logger.debug("Re-querying AI", loop_idx=loop_idx)
             ai_messages = self._build_ai_messages(session_id, include_tools=True)
             full_text = ""
+            reasoning_text = ""
             next_raw_tool_calls: list[dict[str, Any]] | None = None
             async for chunk in ai_provider.chat(ai_messages, tools=tools):
                 full_text += chunk.delta
+                if getattr(chunk, "reasoning_content", None):
+                    reasoning_text += chunk.reasoning_content
                 if getattr(chunk, "tool_calls", None):
                     next_raw_tool_calls = chunk.tool_calls
 
-            self._logger.debug("AI replied", loop_idx=loop_idx, reply=full_text[:300])
-            self._logger.debug("Raw tool calls", loop_idx=loop_idx, raw_tool_calls=next_raw_tool_calls)
+            self._logger.info("AI round reply", loop_idx=loop_idx, reply=full_text[:300])
+            self._logger.info("Raw tool calls", loop_idx=loop_idx, raw_tool_calls=next_raw_tool_calls)
 
             parsed = next_raw_tool_calls if next_raw_tool_calls is not None else self._parse_tool_calls(full_text)
-            self._logger.debug("Next parsed", loop_idx=loop_idx, parsed=parsed)
+            self._logger.info("Next parsed", loop_idx=loop_idx, parsed=parsed)
 
-        self._logger.debug("Tool resolve done", final_content=full_text[:300])
+        self._logger.info("Tool resolve done", final_content=full_text[:300], loop_count=loop_idx)
 
+        final_text = full_text.strip()
+        if not final_text:
+            self._logger.warning("Tool resolve returned empty content, using fallback")
+            final_text = "（已执行工具，但未获得回复）"
         return Message(
-            id=message_id or str(uuid.uuid4()), role="assistant", content=full_text.strip()
+            id=message_id or str(uuid.uuid4()), role="assistant", content=final_text, reasoning_content=reasoning_text
         )
 
     def _get_tool_schema_json(self, tool_name: str) -> str:
@@ -853,6 +988,8 @@ class Gateway:
         try:
             await handler(client_id, payload)
         except Exception as exc:
+            import traceback
+            self._logger.error("Handler failed", method=method, exc=str(exc), traceback=traceback.format_exc())
             await self._send_error(client_id, f"Internal error: {exc}")
         finally:
             async with self._lock:
@@ -1015,26 +1152,34 @@ class Gateway:
         ai_messages = self._build_ai_messages(session.id, include_tools=True, include_live2d_tags=True)
         tools = None
         full_text = ""
+        reasoning_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
-        async for chunk in ai_provider.chat(ai_messages, tools=tools):
-            full_text += chunk.delta
-            if chunk.delta:
-                self._logger.debug("Chat stream chunk", delta=chunk.delta)
-                await self._broadcast(
-                    {
-                        "type": "event",
-                        "method": "chat.stream.chunk",
-                        "payload": {
-                            "session_id": session.id,
-                            "message_id": msg_id,
-                            "delta": chunk.delta,
-                        },
-                    }
-                )
-            if getattr(chunk, "tool_calls", None):
-                raw_tool_calls = chunk.tool_calls
-                self._logger.debug("Native tool_calls", raw_tool_calls=raw_tool_calls)
+        try:
+            async for chunk in ai_provider.chat(ai_messages, tools=tools):
+                full_text += chunk.delta
+                if getattr(chunk, "reasoning_content", None):
+                    reasoning_text += chunk.reasoning_content
+                if chunk.delta:
+                    self._logger.debug("Chat stream chunk", delta=chunk.delta)
+                    await self._broadcast(
+                        {
+                            "type": "event",
+                            "method": "chat.stream.chunk",
+                            "payload": {
+                                "session_id": session.id,
+                                "message_id": msg_id,
+                                "delta": chunk.delta,
+                            },
+                        }
+                    )
+                if getattr(chunk, "tool_calls", None):
+                    raw_tool_calls = chunk.tool_calls
+                    self._logger.debug("Native tool_calls", raw_tool_calls=raw_tool_calls)
+        except Exception as exc:
+            self._logger.error("AI chat failed", exc=str(exc), ai_messages=[{"role": m.role, "content": (m.content or "")[:100]} for m in ai_messages])
+            raise
 
+        has_tool_calls = raw_tool_calls is not None or self._parse_tool_calls(full_text.strip()) is not None
         await self._broadcast(
             {
                 "type": "event",
@@ -1043,11 +1188,12 @@ class Gateway:
                     "session_id": session.id,
                     "message_id": msg_id,
                     "finish_reason": "stop",
+                    "has_tool_calls": has_tool_calls,
                 },
             }
         )
 
-        final_msg = await self._resolve_tool_calls(session.id, full_text.strip(), message_id=msg_id, raw_tool_calls=raw_tool_calls)
+        final_msg = await self._resolve_tool_calls(session.id, full_text.strip(), message_id=msg_id, raw_tool_calls=raw_tool_calls, reasoning_content=reasoning_text)
         cleaned_text, live2d_tags = self._parse_live2d_tags(final_msg.content)
         if cleaned_text != final_msg.content:
             final_msg.content = cleaned_text
@@ -1655,13 +1801,30 @@ class ProactiveChatService:
 def main() -> int:
     """Entry point for the Gateway server."""
     ensure_directories()
-    from aipet.utils.log import configure_logging
+    from aipet.utils.log import configure_logging, setup_exception_logging
 
     config = GatewayConfig()
-    configure_logging(config.gateway_log_level)
+    configure_logging(config.gateway_log_level, log_file_name="gateway.log")
+    setup_exception_logging("gateway")
     logger = structlog.get_logger("gateway.server")
 
     async def _main() -> int:
+        # Install asyncio exception handler now that the loop is running
+        loop = asyncio.get_running_loop()
+
+        def _gateway_asyncio_exc_handler(
+            _loop: asyncio.AbstractEventLoop, context: dict[str, object]
+        ) -> None:
+            message = context.get("message", "Unknown asyncio error")
+            exception = context.get("exception")
+            if exception is not None:
+                logger.error("Asyncio exception: %s | exc=%s", message, exception, exc_info=exception)
+            else:
+                logger.error("Asyncio error: %s | context=%s", message, context)
+            _loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_gateway_asyncio_exc_handler)
+
         gateway = Gateway()
         await gateway.init()
         try:

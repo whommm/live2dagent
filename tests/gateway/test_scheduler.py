@@ -206,7 +206,7 @@ async def test_loop_picks_up_due_task():
 @pytest.mark.asyncio
 async def test_skill_schedule_task_no_gateway():
     """When gateway is None, skill tools return an error."""
-    from aipet.gateway.skills.builtins.scheduler import schedule_task, list_tasks, cancel_task, delete_task
+    from builtin_skills.scheduler import schedule_task, list_tasks, cancel_task, delete_task
     from aipet.gateway import scheduler as sched_mod
 
     old_ref = sched_mod._gateway_ref
@@ -222,7 +222,7 @@ async def test_skill_schedule_task_no_gateway():
 
 @pytest.mark.asyncio
 async def test_skill_schedule_task_with_gateway():
-    from aipet.gateway.skills.builtins.scheduler import schedule_task, list_tasks, cancel_task
+    from builtin_skills.scheduler import schedule_task, list_tasks, cancel_task
     from aipet.gateway import scheduler as sched_mod
 
     old_ref = sched_mod._gateway_ref
