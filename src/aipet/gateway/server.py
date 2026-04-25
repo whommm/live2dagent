@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import json
 import random
+import re
 import time
 import uuid
 from datetime import UTC, datetime
@@ -1191,13 +1192,55 @@ class Gateway:
     def _select_candidate_tools(self, user_content: str) -> list[dict[str, str]]:
         """Return candidate tool briefs for Phase-1 decision.
 
-        First revision returns all available briefs (future: keyword/embedding
-        ranking).  Respects ``config.phase1_max_candidate_tools``.
+        Uses a lightweight keyword-overlap heuristic:
+        1. Extract English words from the user query.
+        2. Score each skill by overlap with its name (high weight) and brief
+           (medium weight).
+        3. Return only the top-scoring matches.
+
+        If the query contains no English words (e.g. pure Chinese) or nothing
+        matches, fall back to returning all briefs (truncated to *max_k*).
         """
         briefs = self.skills.list_tools_brief()
         max_k = self.config.phase1_max_candidate_tools
+
+        # Extract English words from the user query.
+        query_words = set(re.findall(r"[a-zA-Z]{2,}", user_content.lower()))
+
+        if not query_words:
+            # Pure Chinese / no recognizable keywords → conservative fallback.
+            if max_k and len(briefs) > max_k:
+                return briefs[:max_k]
+            return briefs
+
+        scored: list[tuple[int, dict[str, str]]] = []
+        for b in briefs:
+            score = 0
+            name = b["name"].lower()
+            brief_text = b["brief"].lower()
+
+            # Name overlap (high weight) – e.g. "weather" in "weather:get_weather"
+            name_words = set(re.findall(r"[a-zA-Z]{2,}", name))
+            overlap = len(query_words & name_words)
+            score += overlap * 10
+
+            # Brief overlap (medium weight)
+            brief_words = set(re.findall(r"[a-zA-Z]{2,}", brief_text))
+            overlap = len(query_words & brief_words)
+            score += overlap * 3
+
+            scored.append((score, b))
+
+        scored.sort(reverse=True, key=lambda x: x[0])
+
+        # Only return skills that actually matched.
+        matched = [b for s, b in scored if s > 0]
+        if matched:
+            return matched[:max_k]
+
+        # Nothing matched → fallback to all briefs.
         if max_k and len(briefs) > max_k:
-            briefs = briefs[:max_k]
+            return briefs[:max_k]
         return briefs
 
     async def _handle_chat_stream(self, client_id: str, payload: dict[str, Any]) -> None:
