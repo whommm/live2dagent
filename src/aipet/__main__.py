@@ -14,14 +14,17 @@ def main() -> int:
     if len(sys.argv) < 2:
         # Production mode: launcher
         from aipet.launcher import main as launcher_main
+
         return launcher_main()
 
     cmd = sys.argv[1].lower()
     if cmd == "gateway":
         from aipet.gateway.server import main as gateway_main
+
         return gateway_main()
     elif cmd in ("frontend", "gui", "client"):
         from aipet.frontend.app import main as frontend_main
+
         return frontend_main()
     else:
         print(f"Unknown command: {cmd}")

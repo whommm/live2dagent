@@ -41,19 +41,26 @@ class ProviderDialog(QDialog):
         self._current_id: str | None = None
         self._pending_tasks: set[asyncio.Task[None]] = set()
 
-        self.setWindowTitle("Manage Providers")
-        self.setMinimumSize(520, 400)
+        self.setWindowTitle("模型服务商设置")
+        self.setMinimumSize(620, 460)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         self.setStyleSheet(MaterialTheme.dialog_bg())
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(18)
 
         # Left: provider list
         left = QVBoxLayout()
-        left.setSpacing(10)
+        left.setSpacing(12)
+
+        providers_title = QLabel("服务商")
+        providers_title.setStyleSheet(
+            f"color: {MaterialTheme.on_surface}; font-size: 16px; font-weight: 700; "
+            "border: none; background: transparent;"
+        )
+        left.addWidget(providers_title)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(f"color: {MaterialTheme.error}; font-size: 12px;")
@@ -66,18 +73,20 @@ class ProviderDialog(QDialog):
         left.addWidget(self.list_widget)
 
         btn_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton("🔄 Refresh")
-        self.refresh_btn.setStyleSheet(MaterialTheme.text_button())
+        self.refresh_btn = QPushButton("刷")
+        self.refresh_btn.setFixedSize(34, 34)
+        self.refresh_btn.setToolTip("刷新服务商")
+        self.refresh_btn.setStyleSheet(MaterialTheme.icon_button(size=34))
         self.refresh_btn.clicked.connect(lambda: self._run_task(self._load_providers()))
 
-        self.add_btn = QPushButton("+ Add")
+        self.add_btn = QPushButton("+ 添加")
+        self.add_btn.setFixedHeight(34)
         self.add_btn.setStyleSheet(MaterialTheme.filled_button())
         self.add_btn.clicked.connect(self._on_add)
 
-        self.delete_btn = QPushButton("- Delete")
-        self.delete_btn.setStyleSheet(
-            MaterialTheme.outlined_button(text_color=MaterialTheme.error)
-        )
+        self.delete_btn = QPushButton("删除")
+        self.delete_btn.setFixedHeight(34)
+        self.delete_btn.setStyleSheet(MaterialTheme.outlined_button(text_color=MaterialTheme.error))
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(lambda: self._run_task(self._on_delete()))
 
@@ -92,35 +101,48 @@ class ProviderDialog(QDialog):
         right = QVBoxLayout()
         right.setSpacing(14)
 
+        detail_title = QLabel("配置详情")
+        detail_title.setStyleSheet(
+            f"color: {MaterialTheme.on_surface}; font-size: 16px; font-weight: 700; "
+            "border: none; background: transparent;"
+        )
+        right.addWidget(detail_title)
+
         self.form_container = QWidget()
-        self.form_container.setStyleSheet(MaterialTheme.outlined_input())
+        self.form_container.setObjectName("providerForm")
+        self.form_container.setStyleSheet(
+            f"QWidget#providerForm {{ background-color: {MaterialTheme.surface_container}; "
+            f"border: 1px solid {MaterialTheme.outline_variant}; border-radius: {MaterialTheme.radius_lg}px; }}"
+            + MaterialTheme.outlined_input()
+        )
         form = QFormLayout(self.form_container)
+        form.setContentsMargins(16, 16, 16, 16)
         form.setSpacing(12)
 
         self.id_edit = QLineEdit()
-        self.id_edit.setPlaceholderText("unique-id")
+        self.id_edit.setPlaceholderText("唯一标识，例如 openai-main")
         form.addRow("ID:", self.id_edit)
 
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Display Name")
-        form.addRow("Name:", self.name_edit)
+        self.name_edit.setPlaceholderText("显示名称")
+        form.addRow("名称:", self.name_edit)
 
         self.type_combo = QComboBox()
         self.type_combo.addItems(["openai", "gemini", "anthropic", "ollama", "echo"])
-        form.addRow("Type:", self.type_combo)
+        form.addRow("类型:", self.type_combo)
 
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("Optional API Key")
+        self.key_edit.setPlaceholderText("可选 API Key")
         form.addRow("API Key:", self.key_edit)
 
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("https://api.example.com/v1")
-        form.addRow("Base URL:", self.url_edit)
+        form.addRow("接口地址:", self.url_edit)
 
         self.models_edit = QLineEdit()
         self.models_edit.setPlaceholderText("model-1, model-2")
-        form.addRow("Models:", self.models_edit)
+        form.addRow("模型:", self.models_edit)
 
         self.is_custom_label = QLabel("")
         self.is_custom_label.setStyleSheet(
@@ -141,9 +163,13 @@ class ProviderDialog(QDialog):
         save_btn = self.button_box.button(QDialogButtonBox.StandardButton.Save)
         cancel_btn = self.button_box.button(QDialogButtonBox.StandardButton.Cancel)
         if save_btn:
+            save_btn.setText("保存")
             save_btn.setStyleSheet(MaterialTheme.filled_button())
         if cancel_btn:
-            cancel_btn.setStyleSheet(MaterialTheme.text_button(text_color=MaterialTheme.on_surface_variant))
+            cancel_btn.setText("取消")
+            cancel_btn.setStyleSheet(
+                MaterialTheme.text_button(text_color=MaterialTheme.on_surface_variant)
+            )
 
         layout.addLayout(right, 2)
 
@@ -161,7 +187,7 @@ class ProviderDialog(QDialog):
 
     async def _load_providers(self) -> bool:
         """Load providers from Gateway."""
-        self._safe_set_status("Loading...")
+        self._safe_set_status("正在加载...")
         try:
             data = await self.client.request("provider.list")
             self._providers = data.get("providers", [])
@@ -171,13 +197,13 @@ class ProviderDialog(QDialog):
         except TimeoutError:
             self._logger.warning("Failed to load providers: TimeoutError")
             self._safe_set_status(
-                "⚠️ Gateway connection timed out. You can still add providers manually."
+                "Gateway 连接超时。你仍然可以手动添加服务商。"
             )
             return False
         except Exception as exc:
             self._logger.warning("Failed to load providers: %s", exc)
             self._safe_set_status(
-                f"⚠️ Failed to load providers: {exc}\nYou can still add providers manually."
+                f"加载服务商失败：{exc}\n你仍然可以手动添加服务商。"
             )
             return False
 
@@ -204,7 +230,9 @@ class ProviderDialog(QDialog):
         self._pending_tasks.clear()
         event.accept()
 
-    def _on_selection_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+    def _on_selection_changed(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
         if current is None:
             self._clear_form()
             return
@@ -226,7 +254,7 @@ class ProviderDialog(QDialog):
         models = provider.get("models", [])
         self.models_edit.setText(", ".join(models) if isinstance(models, list) else str(models))
         is_custom = provider.get("is_custom", False)
-        self.is_custom_label.setText("Custom provider" if is_custom else "Built-in provider")
+        self.is_custom_label.setText("自定义服务商" if is_custom else "内置服务商")
         self.delete_btn.setEnabled(True)
 
     def _clear_form(self) -> None:
@@ -251,7 +279,9 @@ class ProviderDialog(QDialog):
         if not pid:
             return
         reply = QMessageBox.question(
-            self, "Confirm Delete", f"Delete provider '{pid}'?",
+            self,
+            "删除服务商",
+            f"确定要删除服务商“{pid}”吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -262,16 +292,19 @@ class ProviderDialog(QDialog):
                 await self._load_providers()
                 self.providers_changed.emit()
             else:
-                QMessageBox.warning(self, "Failed", "Could not delete provider.")
+                QMessageBox.warning(self, "删除失败", "无法删除该服务商。")
+        except TimeoutError:
+            with contextlib.suppress(RuntimeError):
+                QMessageBox.critical(self, "错误", "删除失败：Gateway 连接超时。")
         except Exception as exc:
             with contextlib.suppress(RuntimeError):
-                QMessageBox.critical(self, "Error", f"Delete failed: {exc}")
+                QMessageBox.critical(self, "错误", f"删除失败：{exc}")
 
     async def _on_save(self) -> None:
         pid = self.id_edit.text().strip()
         name = self.name_edit.text().strip()
         if not pid or not name:
-            QMessageBox.warning(self, "Invalid", "ID and Name are required.")
+            QMessageBox.warning(self, "信息不完整", "ID 和名称不能为空。")
             return
 
         ptype = self.type_combo.currentText()
@@ -281,7 +314,7 @@ class ProviderDialog(QDialog):
         models = [m.strip() for m in models_raw.split(",") if m.strip()]
 
         if not models:
-            QMessageBox.warning(self, "Invalid", "At least one model is required.")
+            QMessageBox.warning(self, "信息不完整", "至少需要填写一个模型。")
             return
 
         is_new = self._current_id is None
@@ -317,7 +350,12 @@ class ProviderDialog(QDialog):
                         self.list_widget.setCurrentItem(item)
                         break
             else:
-                QMessageBox.warning(self, "Failed", "Could not save provider (ID may already exist).")
+                QMessageBox.warning(
+                    self, "保存失败", "无法保存服务商，ID 可能已经存在。"
+                )
+        except TimeoutError:
+            with contextlib.suppress(RuntimeError):
+                QMessageBox.critical(self, "错误", "保存失败：Gateway 连接超时。")
         except Exception as exc:
             with contextlib.suppress(RuntimeError):
-                QMessageBox.critical(self, "Error", f"Save failed: {exc}")
+                QMessageBox.critical(self, "错误", f"保存失败：{exc}")

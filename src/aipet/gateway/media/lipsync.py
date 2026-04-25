@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 
 def analyze_lipsync(
@@ -33,8 +32,8 @@ def analyze_lipsync(
         it is downsampled evenly.
     """
     try:
-        import soundfile as sf
         import numpy as np
+        import soundfile as sf
     except ImportError:
         return []
 
@@ -88,7 +87,7 @@ def analyze_lipsync(
     normalized = [min(1.0, e / ceiling) for e in energies]
 
     # Apply a gentle curve to make quiet parts quieter and loud parts louder
-    shaped = [v ** 0.7 for v in normalized]
+    shaped = [v**0.7 for v in normalized]
 
     # Downsample if too many points
     if len(timestamps) > max_points:
@@ -99,7 +98,7 @@ def analyze_lipsync(
             result.append((timestamps[i], max(chunk)))
         return result
 
-    return list(zip(timestamps, shaped))
+    return list(zip(timestamps, shaped, strict=False))
 
 
 def dummy_lipsync(duration_sec: float, points: int = 20) -> list[tuple[float, float]]:

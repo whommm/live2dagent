@@ -24,8 +24,8 @@ def test_dummy_lipsync_returns_envelope() -> None:
 def test_analyze_lipsync_on_silent_wav(tmp_path: Path) -> None:
     """Create a silent WAV file and verify analysis returns low values."""
     try:
-        import soundfile as sf
         import numpy as np
+        import soundfile as sf
     except ImportError:
         pytest.skip("soundfile/numpy not available")
 
@@ -41,8 +41,8 @@ def test_analyze_lipsync_on_silent_wav(tmp_path: Path) -> None:
 def test_analyze_lipsync_on_loud_wav(tmp_path: Path) -> None:
     """Create a loud sine wave and verify analysis returns higher values."""
     try:
-        import soundfile as sf
         import numpy as np
+        import soundfile as sf
     except ImportError:
         pytest.skip("soundfile/numpy not available")
 

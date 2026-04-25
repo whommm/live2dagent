@@ -7,29 +7,31 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 
 
 class MaterialTheme:
-    """MD3 light color scheme (Tonal Spot)."""
+    """Soft desktop theme tokens for the AIPet QWidget frontend."""
 
     # Primary
-    primary = "#6750A4"
+    primary = "#4F67A5"
     on_primary = "#FFFFFF"
-    primary_container = "#EADDFF"
-    on_primary_container = "#4F378B"
+    primary_container = "#E8EEFF"
+    on_primary_container = "#1E2F5F"
 
     # Secondary
-    secondary = "#625B71"
+    secondary = "#4F6F68"
     on_secondary = "#FFFFFF"
-    secondary_container = "#E8DEF8"
-    on_secondary_container = "#1D192B"
+    secondary_container = "#DDEDE8"
+    on_secondary_container = "#16342E"
 
     # Surface
-    surface = "#FEF7FF"
-    on_surface = "#1D1B20"
-    on_surface_variant = "#49454F"
-    surface_variant = "#E7E0EC"
+    surface = "#FBFAFD"
+    surface_container = "#FFFFFF"
+    surface_container_high = "#F2F4F7"
+    on_surface = "#171A1F"
+    on_surface_variant = "#59606C"
+    surface_variant = "#EEF0F5"
 
     # Outline
-    outline = "#79747E"
-    outline_variant = "#CAC4D0"
+    outline = "#7E8794"
+    outline_variant = "#D8DDE6"
 
     # Error
     error = "#B3261E"
@@ -52,6 +54,10 @@ class MaterialTheme:
 
     # Font
     font_family = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif'
+
+    radius_sm = 6
+    radius_md = 8
+    radius_lg = 12
 
     @classmethod
     def apply_elevation(cls, widget: QWidget, level: int = 1) -> QGraphicsDropShadowEffect:
@@ -86,9 +92,9 @@ class MaterialTheme:
                 background-color: {bg};
                 color: {fg};
                 border: none;
-                border-radius: 20px;
-                padding: 10px 24px;
-                font-weight: 500;
+                border-radius: {cls.radius_md}px;
+                padding: 8px 16px;
+                font-weight: 600;
                 font-size: 14px;
             }}
             QPushButton:hover {{
@@ -111,9 +117,9 @@ class MaterialTheme:
                 background-color: transparent;
                 color: {fg};
                 border: 1px solid {cls.outline_variant};
-                border-radius: 20px;
-                padding: 10px 24px;
-                font-weight: 500;
+                border-radius: {cls.radius_md}px;
+                padding: 8px 16px;
+                font-weight: 600;
                 font-size: 14px;
             }}
             QPushButton:hover {{
@@ -137,9 +143,9 @@ class MaterialTheme:
                 background-color: transparent;
                 color: {fg};
                 border: none;
-                border-radius: 20px;
-                padding: 10px 12px;
-                font-weight: 500;
+                border-radius: {cls.radius_md}px;
+                padding: 8px 10px;
+                font-weight: 600;
                 font-size: 14px;
             }}
             QPushButton:hover {{
@@ -154,16 +160,16 @@ class MaterialTheme:
     def outlined_input(cls) -> str:
         return f"""
             QLineEdit, QTextEdit {{
-                background-color: {cls.surface};
+                background-color: {cls.surface_container};
                 color: {cls.on_surface};
                 border: 1px solid {cls.outline_variant};
-                border-radius: 4px;
+                border-radius: {cls.radius_md}px;
                 padding: 8px 12px;
                 font-size: 14px;
             }}
             QLineEdit:focus, QTextEdit:focus {{
                 border: 2px solid {cls.primary};
-                background-color: {cls.surface};
+                background-color: {cls.surface_container};
             }}
             QLineEdit:disabled, QTextEdit:disabled {{
                 background-color: {cls.surface_variant};
@@ -176,12 +182,12 @@ class MaterialTheme:
     def combo_box(cls) -> str:
         return f"""
             QComboBox {{
-                background-color: {cls.surface_variant};
+                background-color: {cls.surface_container_high};
                 color: {cls.on_surface};
-                border: none;
-                border-radius: 4px;
+                border: 1px solid {cls.outline_variant};
+                border-radius: {cls.radius_md}px;
                 padding: 6px 12px;
-                font-weight: 500;
+                font-weight: 600;
                 min-height: 24px;
             }}
             QComboBox:hover {{
@@ -236,8 +242,36 @@ class MaterialTheme:
     def top_bar(cls) -> str:
         return f"""
             QWidget {{
-                background-color: {cls.surface};
+                background-color: {cls.surface_container};
                 border-bottom: 1px solid {cls.outline_variant};
+            }}
+        """
+
+    @classmethod
+    def icon_button(cls, size: int = 34, danger: bool = False) -> str:
+        hover_bg = cls.error if danger else cls._alpha(cls.on_surface, 7)
+        hover_fg = cls.on_error if danger else cls.on_surface
+        font_size = 12 if size <= 26 else 14
+        return f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {cls.on_surface_variant};
+                border: none;
+                border-radius: {size // 2}px;
+                padding: 0px;
+                font-size: {font_size}px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_bg};
+                color: {hover_fg};
+            }}
+            QPushButton:pressed {{
+                background-color: {cls._alpha(cls.on_surface, 12)};
+            }}
+            QPushButton:disabled {{
+                color: {cls.outline_variant};
+                background-color: transparent;
             }}
         """
 

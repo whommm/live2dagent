@@ -1,5 +1,6 @@
 """Tests for Gateway protocol handling."""
 
+import json
 import shutil
 
 import pytest
@@ -8,6 +9,8 @@ from aipet.gateway.config import GatewayConfig
 from aipet.gateway.protocol import ProactiveMessageEvent
 from aipet.gateway.providers.ai_echo import EchoProvider
 from aipet.gateway.server import Gateway
+
+
 @pytest.fixture
 async def gateway(tmp_path):
     g = Gateway(config=GatewayConfig(ai_provider="echo"))
@@ -213,6 +216,96 @@ def test_proactive_message_event_serialization() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_requests_keep_response_ids(gateway: Gateway) -> None:
+    """Concurrent requests from one client must not reuse another request id."""
+    sent: list[dict] = []
+
+    class FakeClient:
+        async def send(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+    gateway.clients = {"c1": FakeClient()}  # type: ignore[assignment]
+
+    async def delayed_history(client_id: str, payload: dict) -> None:
+        await asyncio.sleep(0.05)
+        await gateway._send(
+            client_id,
+            {"type": "response", "method": "chat.history", "payload": {"messages": []}},
+        )
+
+    import asyncio
+
+    original_handler = gateway._handle_chat_history
+    gateway._handle_chat_history = delayed_history  # type: ignore[method-assign]
+    try:
+        await asyncio.gather(
+            gateway._process_message(
+                "c1",
+                json.dumps(
+                    {"id": "req-1", "type": "request", "method": "chat.history", "payload": {}}
+                ),
+            ),
+            gateway._process_message(
+                "c1",
+                json.dumps(
+                    {"id": "req-2", "type": "request", "method": "session.list", "payload": {}}
+                ),
+            ),
+        )
+    finally:
+        gateway._handle_chat_history = original_handler  # type: ignore[method-assign]
+
+    ids_by_method = {msg["method"]: msg.get("id") for msg in sent if msg["type"] == "response"}
+    assert ids_by_method["chat.history"] == "req-1"
+    assert ids_by_method["session.list"] == "req-2"
+
+
+@pytest.mark.asyncio
+async def test_provider_current_reports_configuration_status(gateway: Gateway) -> None:
+    responses: list[dict] = []
+
+    async def mock_send(client_id: str, data: dict) -> None:
+        responses.append(data)
+
+    gateway._send = mock_send  # type: ignore[method-assign]
+    gateway.provider_manager.update_provider("openai", api_key=None)
+    gateway.provider_manager.set_current("openai", "gpt-4o")
+
+    await gateway._handle_provider_get_current("c1", {})
+
+    payload = responses[0]["payload"]
+    assert payload["requires_api_key"] is True
+    assert payload["is_configured"] is False
+    assert payload["config_path"].endswith("providers.toml")
+
+
+@pytest.mark.asyncio
+async def test_system_update_settings_changes_runtime_toggles(gateway: Gateway) -> None:
+    responses: list[dict] = []
+    broadcasts: list[dict] = []
+
+    async def mock_send(client_id: str, data: dict) -> None:
+        responses.append(data)
+
+    async def mock_broadcast(data: dict) -> None:
+        broadcasts.append(data)
+
+    gateway._send = mock_send  # type: ignore[method-assign]
+    gateway._broadcast = mock_broadcast  # type: ignore[method-assign]
+
+    await gateway._handle_system_update_settings(
+        "c1", {"tts_auto_play": False, "proactive_enabled": False, "proactive_tts": False}
+    )
+
+    assert gateway.config.tts_auto_play is False
+    assert gateway.config.proactive_enabled is False
+    assert gateway.config.proactive_tts is False
+    assert responses[0]["payload"]["success"] is True
+    assert responses[0]["payload"]["tts_auto_play"] is False
+    assert broadcasts[0]["method"] == "system.settings.updated"
+
+
+@pytest.mark.asyncio
 async def test_proactive_chat_service_broadcasts_event(gateway: Gateway) -> None:
     """Test ProactiveChatService generates and broadcasts a proactive message."""
     sent_messages: list[dict] = []
@@ -225,6 +318,7 @@ async def test_proactive_chat_service_broadcasts_event(gateway: Gateway) -> None
     gateway.clients = {"test-client": None}  # type: ignore[assignment]
     # Ensure user activity is old enough to not skip proactive
     import time
+
     gateway._last_user_activity = time.time() - 60
 
     await gateway.proactive._trigger()

@@ -28,7 +28,7 @@ class GatewayConfig(BaseSettings):
 
     tts_provider: Literal["edge-tts", "system"] = Field(default="edge-tts")
     tts_default_voice: str = Field(default="zh-CN-XiaoxiaoNeural")
-    tts_auto_play: bool = Field(default=True)
+    tts_auto_play: bool = Field(default=False)
 
     asr_enabled: bool = Field(default=False)
     asr_provider: Literal["faster-whisper"] = Field(default="faster-whisper")

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
@@ -31,7 +31,14 @@ class LiveCanvasWidget(QWidget):
     closed = Signal(str)  # canvas_id
     size_changed = Signal(str)  # canvas_id
 
-    def __init__(self, canvas_id: str, canvas_type: str, data: dict[str, Any], parent: QWidget | None = None, max_content_height: int = 400) -> None:
+    def __init__(
+        self,
+        canvas_id: str,
+        canvas_type: str,
+        data: dict[str, Any],
+        parent: QWidget | None = None,
+        max_content_height: int = 400,
+    ) -> None:
         super().__init__(parent)
         self.canvas_id = canvas_id
         self.canvas_type = canvas_type
@@ -67,7 +74,7 @@ class LiveCanvasWidget(QWidget):
         # Container with border and background
         self.container = QWidget()
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(12, 10, 12, 10)
+        container_layout.setContentsMargins(14, 12, 14, 12)
         container_layout.setSpacing(8)
 
         # Header: icon + title + close button
@@ -76,20 +83,21 @@ class LiveCanvasWidget(QWidget):
         header.setContentsMargins(0, 0, 0, 0)
 
         self.icon_label = QLabel()
-        self.icon_label.setStyleSheet("font-size: 18px; border: none; background: transparent;")
+        self.icon_label.setStyleSheet(
+            f"color: {MaterialTheme.primary}; font-size: 13px; font-weight: 800; "
+            "border: none; background: transparent;"
+        )
 
         self.title_label = QLabel()
         self.title_label.setFont(QFont(MaterialTheme.font_family, 13, QFont.Weight.Bold))
-        self.title_label.setStyleSheet(f"color: {MaterialTheme.on_surface}; border: none; background: transparent;")
+        self.title_label.setStyleSheet(
+            f"color: {MaterialTheme.on_surface}; border: none; background: transparent;"
+        )
         self.title_label.setWordWrap(True)
 
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(22, 22)
-        self.close_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-            f"border: none; border-radius: 11px; font-size: 12px; padding: 0px; }}"
-            f"QPushButton:hover {{ background-color: {MaterialTheme.error}; color: {MaterialTheme.on_error}; }}"
-        )
+        self.close_btn.setStyleSheet(MaterialTheme.icon_button(size=22, danger=True))
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.clicked.connect(self._on_close_clicked)
 
@@ -129,7 +137,9 @@ class LiveCanvasWidget(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setFont(QFont(MaterialTheme.font_family, 13))
-        label.setStyleSheet(f"color: {MaterialTheme.on_surface}; border: none; background: transparent;")
+        label.setStyleSheet(
+            f"color: {MaterialTheme.on_surface}; border: none; background: transparent;"
+        )
         label.setMaximumWidth(260)
         label.setMinimumWidth(40)
         # Use QTextDocument for reliable wrapped height calculation
@@ -150,7 +160,9 @@ class LiveCanvasWidget(QWidget):
         browser.setOpenExternalLinks(True)
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        browser.setStyleSheet("QTextBrowser { background: transparent; border: none; padding: 0px; }")
+        browser.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; padding: 0px; }"
+        )
         browser.setFrameStyle(0)
         browser.setHtml(self._text_to_html(content))
         browser.setMinimumHeight(60)
@@ -189,6 +201,7 @@ class LiveCanvasWidget(QWidget):
         if src.startswith("data:image"):
             # base64 data URI
             import base64
+
             try:
                 header, encoded = src.split(",", 1)
                 pixmap.loadFromData(base64.b64decode(encoded))
@@ -206,10 +219,11 @@ class LiveCanvasWidget(QWidget):
                 scaled = scaled.scaledToHeight(200, Qt.TransformationMode.SmoothTransformation)
             img_label.setPixmap(scaled)
         else:
-            img_label.setText("🖼️ Image")
+            img_label.setText("图片暂不可预览")
             img_label.setStyleSheet(
                 f"QLabel {{ color: {MaterialTheme.on_surface_variant}; font-size: 14px; "
-                f"background: {MaterialTheme.surface_variant}; border-radius: 8px; padding: 20px; }}"
+                f"background: {MaterialTheme.surface_container_high}; border: 1px solid {MaterialTheme.outline_variant}; "
+                "border-radius: 8px; padding: 20px; }}"
             )
 
         layout.addWidget(img_label)
@@ -218,7 +232,9 @@ class LiveCanvasWidget(QWidget):
             cap_label = QLabel(caption)
             cap_label.setWordWrap(True)
             cap_label.setFont(QFont(MaterialTheme.font_family, 11))
-            cap_label.setStyleSheet(f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;")
+            cap_label.setStyleSheet(
+                f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;"
+            )
             cap_label.setMaximumWidth(280)
             layout.addWidget(cap_label)
 
@@ -300,7 +316,9 @@ class LiveCanvasWidget(QWidget):
         browser.setOpenExternalLinks(True)
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        browser.setStyleSheet("QTextBrowser { background: transparent; border: none; padding: 0px; }")
+        browser.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; padding: 0px; }"
+        )
         browser.setFrameStyle(0)
         browser.setHtml(html)
         browser.setMinimumHeight(60)
@@ -325,16 +343,23 @@ class LiveCanvasWidget(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setFont(QFont(MaterialTheme.font_family, 12))
-        label.setStyleSheet(f"color: {MaterialTheme.on_surface}; border: none; background: transparent;")
+        label.setStyleSheet(
+            f"color: {MaterialTheme.on_surface}; border: none; background: transparent;"
+        )
         label.setMaximumWidth(280)
         return label
 
     def _text_to_html(self, text: str) -> str:
         """Convert plain text with markdown-like formatting to simple HTML."""
         import re
+
         html = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html)
-        html = re.sub(r"`(.+?)`", r"<code style='background:#F4F4F5;padding:1px 4px;border-radius:4px;'>\1</code>", html)
+        html = re.sub(
+            r"`(.+?)`",
+            r"<code style='background:#F4F4F5;padding:1px 4px;border-radius:4px;'>\1</code>",
+            html,
+        )
         html = html.replace("\n", "<br>")
         return (
             f"<html><head><style>"
@@ -345,12 +370,12 @@ class LiveCanvasWidget(QWidget):
 
     def _apply_style(self) -> None:
         theme_colors = {
-            "purple": ("#7D64B5", "#FFFFFF"),
-            "blue": ("#4A90E2", "#FFFFFF"),
-            "green": ("#50C878", "#FFFFFF"),
-            "orange": ("#FF8C42", "#FFFFFF"),
-            "red": ("#E25563", "#FFFFFF"),
-            "default": ("#FFFFFF", MaterialTheme.on_surface),
+            "purple": (MaterialTheme.primary_container, MaterialTheme.on_primary_container),
+            "blue": ("#E8F0FF", "#17335F"),
+            "green": (MaterialTheme.secondary_container, MaterialTheme.on_secondary_container),
+            "orange": ("#FFF1DE", "#5C3510"),
+            "red": (MaterialTheme.error_container, MaterialTheme.on_error_container),
+            "default": (MaterialTheme.surface_container, MaterialTheme.on_surface),
         }
         theme = self._data.get("theme", "default")
         bg, fg = theme_colors.get(theme, theme_colors["default"])
@@ -362,9 +387,9 @@ class LiveCanvasWidget(QWidget):
             self.container.setStyleSheet(
                 f"""
                 QWidget {{
-                    background-color: {MaterialTheme.rgba(MaterialTheme.primary, 235)};
-                    border-radius: 16px;
-                    border: 2px solid {MaterialTheme.rgba(MaterialTheme.on_primary, 160)};
+                    background-color: {MaterialTheme.rgba(MaterialTheme.surface_container, 246)};
+                    border-radius: 14px;
+                    border: 1px solid {MaterialTheme.rgba(MaterialTheme.primary, 80)};
                 }}
                 """
             )
@@ -377,7 +402,7 @@ class LiveCanvasWidget(QWidget):
                 QWidget {{
                     background-color: {bg};
                     color: {fg};
-                    border-radius: 16px;
+                    border-radius: 12px;
                     border: 1px solid {MaterialTheme.outline_variant};
                 }}
                 QLabel {{ color: {fg}; }}

@@ -75,6 +75,7 @@ fix_*.py
 
 # Test artifacts
 .pytest_cache/
+.pytest-temp/
 .coverage
 htmlcov/
 

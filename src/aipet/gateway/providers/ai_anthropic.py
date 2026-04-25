@@ -48,10 +48,12 @@ class AnthropicProvider:
             if m.role == "system":
                 system_texts.append(m.content)
             elif m.role == "tool":
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": f"Tool result ({m.name or m.tool_call_id}): {m.content}",
-                })
+                anthropic_messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Tool result ({m.name or m.tool_call_id}): {m.content}",
+                    }
+                )
             else:
                 anthropic_messages.append({"role": m.role, "content": m.content})
         system = "\n\n".join(system_texts) if system_texts else None
@@ -91,7 +93,7 @@ class AnthropicProvider:
                 # Signal completion
                 yield Chunk(delta="", finish_reason="stop")
         except anthropic.APIError as exc:
-            yield Chunk(delta=f"", finish_reason=f"error: {exc}")
+            yield Chunk(delta="", finish_reason=f"error: {exc}")
 
     async def compact(self, messages: list[Message]) -> str:
         system, anthropic_messages = self._to_anthropic_messages(messages)

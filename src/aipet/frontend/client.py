@@ -24,7 +24,12 @@ def fire_and_forget(coro: Any) -> None:
     def _on_done(t: asyncio.Task[Any]) -> None:
         if not t.done():
             return
-        exc = t.exception()
+        if t.cancelled():
+            return
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
         if exc is not None and not isinstance(exc, asyncio.CancelledError):
             logging.getLogger("aipet.frontend.fire_and_forget").exception(
                 "Unhandled error in fire-and-forget task %s", t.get_name()
@@ -58,8 +63,12 @@ class GatewayClient:
     async def connect(self) -> None:
         """Establish connection and start background reconnect watcher."""
         self._should_reconnect = True
-        await self._try_connect()
-        self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        try:
+            await self._try_connect()
+        except Exception as exc:
+            _logger.warning("Initial connection attempt failed; background reconnect enabled", error=str(exc))
 
     async def disconnect(self) -> None:
         """Close the connection and stop automatic reconnection."""
@@ -110,12 +119,14 @@ class GatewayClient:
         req_id = f"req_{uuid.uuid4().hex}_{asyncio.get_event_loop().time()}"
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
         self._response_futures[req_id] = fut
-        await self.send({
-            "id": req_id,
-            "type": "request",
-            "method": method,
-            "payload": payload or {},
-        })
+        await self.send(
+            {
+                "id": req_id,
+                "type": "request",
+                "method": method,
+                "payload": payload or {},
+            }
+        )
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
         finally:
@@ -146,13 +157,20 @@ class GatewayClient:
 
     async def _try_connect(self) -> None:
         """Single connection attempt."""
-        self._ws = await websockets.connect(self.uri)
+        if self._ws is not None:
+            with contextlib.suppress(Exception):
+                await self._ws.close()
+            self._ws = None
+        # Local Gateway connections should bypass any system HTTP proxy.
+        self._ws = await websockets.connect(self.uri, proxy=None)
         self._running = True
-        await self.send({
-            "type": "request",
-            "method": "client.hello",
-            "payload": {"client_type": "pyqt", "version": "2.0.0a1"},
-        })
+        await self.send(
+            {
+                "type": "request",
+                "method": "client.hello",
+                "payload": {"client_type": "pyqt", "version": "2.0.0a1"},
+            }
+        )
         self._read_task = asyncio.create_task(self._read_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         for cb in self._on_connect_callbacks:
@@ -165,14 +183,18 @@ class GatewayClient:
     async def _reconnect_loop(self) -> None:
         """Watch the read loop and reconnect if it exits unexpectedly."""
         while self._should_reconnect:
-            if self._read_task is not None:
+            if self.connected:
+                if self._read_task is None:
+                    await asyncio.sleep(0.5)
+                    continue
                 try:
                     await self._read_task
                 except asyncio.CancelledError:
                     return
-
             if not self._should_reconnect:
                 return
+            if self.connected:
+                continue
 
             _logger.debug("Connection lost, reconnecting", delay=self._reconnect_delay)
             await asyncio.sleep(self._reconnect_delay)
@@ -215,10 +237,10 @@ class GatewayClient:
                 for handler in self._handlers.get(method, []):
                     try:
                         handler(data.get("payload", {}))
-                    except Exception as exc:
+                    except Exception:
                         _logger.exception("Handler error")
         except websockets.exceptions.ConnectionClosed:
             self._running = False
-        except Exception as exc:
+        except Exception:
             _logger.exception("Read loop error")
             self._running = False

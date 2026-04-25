@@ -51,9 +51,7 @@ class AppState(BaseModel):
     ai_provider_status: ProviderStatus = Field(
         default_factory=lambda: ProviderStatus(name="gemini")
     )
-    tts_status: ProviderStatus = Field(
-        default_factory=lambda: ProviderStatus(name="edge-tts")
-    )
+    tts_status: ProviderStatus = Field(default_factory=lambda: ProviderStatus(name="edge-tts"))
     asr_status: ProviderStatus = Field(
         default_factory=lambda: ProviderStatus(name="faster-whisper")
     )
@@ -99,5 +97,5 @@ class StateStore:
         for subscriber in self._subscribers:
             try:
                 await subscriber(snapshot)
-            except Exception as exc:
+            except Exception:
                 _logger.exception("StateStore subscriber error")

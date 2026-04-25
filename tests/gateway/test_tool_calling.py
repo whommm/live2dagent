@@ -1,7 +1,6 @@
 """Tests for native function calling across providers and Gateway."""
 
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,8 +55,16 @@ async def test_openai_provider_stream_parses_tool_calls() -> None:
 
     # Simulate streamed chunks with tool call deltas
     fake_lines = [
-        'data: {"choices":[{"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"weather:get_weather","arguments":""}}]},"finish_reason":null}]}',
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\": \\"Beijing\\"}"}}]},"finish_reason":null}]}',
+        (
+            'data: {"choices":[{"delta":{"content":null,"tool_calls":[{"index":0,'
+            '"id":"call_abc","type":"function","function":{"name":"weather:get_weather",'
+            '"arguments":""}}]},"finish_reason":null}]}'
+        ),
+        (
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+            '"function":{"arguments":"{\\"city\\": \\"Beijing\\"}"}}]},'
+            '"finish_reason":null}]}'
+        ),
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
         "data: [DONE]",
     ]
@@ -108,7 +115,11 @@ def test_filter_incomplete_tool_calls() -> None:
     """Verify _filter_incomplete_tool_calls removes broken sequences."""
     # Complete sequence: 2 tool_calls + 2 tools
     complete = [
-        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}', tool_calls=[{"name": "a"}, {"name": "b"}]),
+        SessionMessage(
+            role="assistant",
+            content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}',
+            tool_calls=[{"name": "a"}, {"name": "b"}],
+        ),
         SessionMessage(role="tool", content="r1", tool_call_id="a"),
         SessionMessage(role="tool", content="r2", tool_call_id="b"),
     ]
@@ -117,14 +128,20 @@ def test_filter_incomplete_tool_calls() -> None:
 
     # Incomplete: 1 tool_call + 0 tools
     incomplete = [
-        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]),
+        SessionMessage(
+            role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]
+        ),
     ]
     filtered = Gateway._filter_incomplete_tool_calls(incomplete)
     assert len(filtered) == 0
 
     # Incomplete: 2 tool_calls + 1 tool
     incomplete2 = [
-        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}', tool_calls=[{"name": "a"}, {"name": "b"}]),
+        SessionMessage(
+            role="assistant",
+            content='{"tool_calls": [{"name": "a"}, {"name": "b"}]}',
+            tool_calls=[{"name": "a"}, {"name": "b"}],
+        ),
         SessionMessage(role="tool", content="r1", tool_call_id="a"),
     ]
     filtered = Gateway._filter_incomplete_tool_calls(incomplete2)
@@ -141,9 +158,13 @@ def test_filter_incomplete_tool_calls() -> None:
 
     # Mixed: complete + incomplete
     mixed = [
-        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]),
+        SessionMessage(
+            role="assistant", content='{"tool_calls": [{"name": "a"}]}', tool_calls=[{"name": "a"}]
+        ),
         SessionMessage(role="tool", content="r1", tool_call_id="a"),
-        SessionMessage(role="assistant", content='{"tool_calls": [{"name": "b"}]}', tool_calls=[{"name": "b"}]),
+        SessionMessage(
+            role="assistant", content='{"tool_calls": [{"name": "b"}]}', tool_calls=[{"name": "b"}]
+        ),
     ]
     filtered = Gateway._filter_incomplete_tool_calls(mixed)
     assert len(filtered) == 2
@@ -154,15 +175,19 @@ def test_filter_incomplete_tool_calls() -> None:
 def test_parse_dsml_tool_calls() -> None:
     """Verify _parse_dsml_tool_calls extracts DeepSeek DSML format."""
     dsml_text = (
-        '让我再深入看看核心文件～\n'
-        '<｜DSML｜tool_calls>\n'
+        "让我再深入看看核心文件～\n"
+        "<｜DSML｜tool_calls>\n"
         '<｜DSML｜invoke name="file:read_file">\n'
-        '<｜DSML｜parameter name="file_path" string="true">src/aipet/gateway/skills/schema.py</｜DSML｜parameter>\n'
-        '</｜DSML｜invoke>\n'
+        '<｜DSML｜parameter name="file_path" string="true">'
+        "src/aipet/gateway/skills/schema.py"
+        "</｜DSML｜parameter>\n"
+        "</｜DSML｜invoke>\n"
         '<｜DSML｜invoke name="file:read_file">\n'
-        '<｜DSML｜parameter name="file_path" string="true">src/aipet/gateway/skills/router.py</｜DSML｜parameter>\n'
-        '</｜DSML｜invoke>\n'
-        '</｜DSML｜tool_calls>'
+        '<｜DSML｜parameter name="file_path" string="true">'
+        "src/aipet/gateway/skills/router.py"
+        "</｜DSML｜parameter>\n"
+        "</｜DSML｜invoke>\n"
+        "</｜DSML｜tool_calls>"
     )
     parsed = Gateway._parse_dsml_tool_calls(dsml_text)
     assert parsed is not None

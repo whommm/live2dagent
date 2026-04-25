@@ -37,18 +37,22 @@ class GeminiProvider:
             if msg.role == "user":
                 contents.append(msg.content)
             elif msg.role == "assistant":
-                contents.append(genai.types.Content(
-                    role="model",
-                    parts=[genai.types.Part(text=msg.content)],
-                ))
+                contents.append(
+                    genai.types.Content(
+                        role="model",
+                        parts=[genai.types.Part(text=msg.content)],
+                    )
+                )
             elif msg.role == "system":
                 # System messages are handled via config.system_instruction
                 pass
             elif msg.role == "tool":
-                contents.append(genai.types.Content(
-                    role="user",
-                    parts=[genai.types.Part(text=msg.content)],
-                ))
+                contents.append(
+                    genai.types.Content(
+                        role="user",
+                        parts=[genai.types.Part(text=msg.content)],
+                    )
+                )
         return contents
 
     @staticmethod
@@ -113,20 +117,22 @@ class GeminiProvider:
                     yield Chunk(delta=text)
 
                 # Accumulate function calls from all candidates/parts
-                for candidate in (getattr(chunk, "candidates", None) or []):
+                for candidate in getattr(chunk, "candidates", None) or []:
                     content = getattr(candidate, "content", None)
                     if content:
-                        for part in (getattr(content, "parts", None) or []):
+                        for part in getattr(content, "parts", None) or []:
                             fc = getattr(part, "function_call", None)
                             if fc:
                                 args: dict[str, Any] = {}
                                 fc_args = getattr(fc, "args", None)
                                 if fc_args:
-                                    args = {k: v for k, v in fc_args.items()}
-                                tool_calls.append({
-                                    "name": getattr(fc, "name", ""),
-                                    "arguments": args,
-                                })
+                                    args = dict(fc_args.items())
+                                tool_calls.append(
+                                    {
+                                        "name": getattr(fc, "name", ""),
+                                        "arguments": args,
+                                    }
+                                )
 
             if tool_calls:
                 yield Chunk(delta="", finish_reason="tool_calls", tool_calls=tool_calls)

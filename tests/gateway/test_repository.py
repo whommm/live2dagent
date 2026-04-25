@@ -6,6 +6,8 @@ import pytest
 
 from aipet.gateway.repository import ChatRepository
 from aipet.gateway.session import Message, Session
+
+
 @pytest.fixture
 async def repo(tmp_path):
     sid = "test-session-123"

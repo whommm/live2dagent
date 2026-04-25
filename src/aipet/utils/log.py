@@ -8,16 +8,17 @@ import logging.handlers
 import sys
 import threading
 import traceback
-from pathlib import Path
 from typing import Any
 
 import structlog
 
 from aipet.utils.paths import get_user_data_dir
 
-
 # Keep a reference to the file handler so exception hooks can use it
 _current_file_handler: logging.FileHandler | None = None
+_CRASH_REPORT_TEMPLATE = (
+    "\n========== UNCAUGHT EXCEPTION ==========\n%s\n========================================"
+)
 
 
 def configure_logging(
@@ -54,10 +55,12 @@ def configure_logging(
             backupCount=7,
             encoding="utf-8",
         )
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         root.addHandler(file_handler)
         _current_file_handler = file_handler
 
@@ -122,14 +125,14 @@ def _write_crash_report(exc_type: type, exc_value: BaseException, tb: Any) -> No
             level=logging.ERROR,
             pathname="",
             lineno=0,
-            msg="\n========== UNCAUGHT EXCEPTION ==========\n%s\n========================================",
+            msg=_CRASH_REPORT_TEMPLATE,
             args=(report,),
             exc_info=(exc_type, exc_value, tb),
         )
         _current_file_handler.emit(record)
         _current_file_handler.flush()
     else:
-        _get_fallback_logger().error("\n========== UNCAUGHT EXCEPTION ==========\n%s\n========================================", report)
+        _get_fallback_logger().error(_CRASH_REPORT_TEMPLATE, report)
 
 
 def setup_exception_logging(component: str = "aipet") -> None:
@@ -150,7 +153,9 @@ def setup_exception_logging(component: str = "aipet") -> None:
     sys.excepthook = _sync_excepthook
 
     # 2. Asyncio task exceptions
-    def _asyncio_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    def _asyncio_exception_handler(
+        loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+    ) -> None:
         message = context.get("message", "Asyncio error")
         exception = context.get("exception")
         task = context.get("task")
@@ -188,7 +193,12 @@ def setup_exception_logging(component: str = "aipet") -> None:
         def _on_task_done(t: asyncio.Task[Any]) -> None:
             if not t.done():
                 return
-            exc = t.exception()
+            if t.cancelled():
+                return
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
             if exc is not None and not isinstance(exc, asyncio.CancelledError):
                 logger = _get_fallback_logger()
                 logger.error(

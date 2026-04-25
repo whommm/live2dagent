@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from typing import List, Optional
-
 from aipet.gateway.skills.writer import (
     SkillWriterError,
     build_mock_args,
@@ -15,7 +13,6 @@ from aipet.gateway.skills.writer import (
     run_skill_tests,
     save_draft_skill,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lint
@@ -104,7 +101,7 @@ def test_build_mock_args_skips_defaults() -> None:
 
 
 def test_build_mock_args_optional() -> None:
-    def demo(a: Optional[str]) -> str:
+    def demo(a: str | None) -> str:
         return ""
 
     args, errors = build_mock_args(demo)
@@ -113,7 +110,7 @@ def test_build_mock_args_optional() -> None:
 
 
 def test_build_mock_args_list() -> None:
-    def demo(items: List[str]) -> str:
+    def demo(items: list[str]) -> str:
         return ""
 
     args, errors = build_mock_args(demo)
@@ -175,12 +172,12 @@ async def test_test_skill_module_fails_forbidden_import() -> None:
 
 @pytest.mark.asyncio
 async def test_test_skill_module_smoke_test_type_error() -> None:
-    code = '''
+    code = """
 def broken(a: str, b: int) -> str:
     return a + b  # "test" + 42 raises TypeError
 
 tools = {"broken": broken}
-'''
+"""
     result = await run_skill_tests("test_broken", code, "# Broken")
     # mock args pass str and int, so a+b raises TypeError at runtime.
     assert result["passed"] is False
@@ -193,7 +190,9 @@ tools = {"broken": broken}
 # ---------------------------------------------------------------------------
 
 
-def test_save_install_delete_draft_skill(tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_install_delete_draft_skill(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("aipet.gateway.skills.writer.get_user_data_dir", lambda: tmp_path)
 
     # Create draft

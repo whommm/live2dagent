@@ -109,10 +109,8 @@ class TaskScheduler:
                     continue
                 if task.next_run_at <= now:
                     await self._execute(task)
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop_event(), timeout=1.0)
-            except TimeoutError:
-                pass
 
     async def _stop_event(self) -> None:
         """Placeholder that never resolves; used for interruptible sleep."""
@@ -183,7 +181,7 @@ class TaskScheduler:
                         task.next_run_at = now + timedelta(seconds=task.interval_seconds)
                 self._tasks[task.id] = task
             _logger.info("Loaded %d tasks from %s", len(self._tasks), self._tasks_file)
-        except Exception as exc:
+        except Exception:
             _logger.exception("Failed to load tasks")
 
     def _save_tasks(self) -> None:
@@ -191,8 +189,10 @@ class TaskScheduler:
         try:
             self._tasks_file.parent.mkdir(parents=True, exist_ok=True)
             with self._tasks_file.open("w", encoding="utf-8") as f:
-                json.dump([t.to_dict() for t in self._tasks.values()], f, ensure_ascii=False, indent=2)
-        except Exception as exc:
+                json.dump(
+                    [t.to_dict() for t in self._tasks.values()], f, ensure_ascii=False, indent=2
+                )
+        except Exception:
             _logger.exception("Failed to save tasks")
 
     # ------------------------------------------------------------------

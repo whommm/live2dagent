@@ -60,7 +60,7 @@ def test_speech_bubble_creation(app: QApplication) -> None:
 def test_speech_bubble_click_emits_signal(app: QApplication) -> None:
     from unittest.mock import MagicMock
 
-    from PySide6.QtCore import QPoint
+    from PySide6.QtCore import QPointF
     from PySide6.QtGui import QMouseEvent
 
     bubble = SpeechBubble()
@@ -70,7 +70,9 @@ def test_speech_bubble_click_emits_signal(app: QApplication) -> None:
 
     event = QMouseEvent(
         QMouseEvent.Type.MouseButtonPress,
-        QPoint(10, 10),
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPointF(10, 10),
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,

@@ -9,10 +9,10 @@ import pytest
 
 from aipet.gateway.scheduler import ScheduledTask, TaskScheduler
 
-
 # ---------------------------------------------------------------------------
 # ScheduledTask
 # ---------------------------------------------------------------------------
+
 
 def test_scheduled_task_defaults():
     task = ScheduledTask(skill_id="demo", tool_name="ping")
@@ -40,9 +40,16 @@ def test_scheduled_task_to_dict():
 # TaskScheduler — basic CRUD
 # ---------------------------------------------------------------------------
 
+
 def test_add_task():
     s = TaskScheduler()
-    tid = s.add_task(skill_id="weather", tool_name="get", arguments={"city": "NYC"}, interval_seconds=300, name="w")
+    tid = s.add_task(
+        skill_id="weather",
+        tool_name="get",
+        arguments={"city": "NYC"},
+        interval_seconds=300,
+        name="w",
+    )
     assert tid in s._tasks
     task = s._tasks[tid]
     assert task.skill_id == "weather"
@@ -83,6 +90,7 @@ def test_get_task():
 # TaskScheduler — execution loop (async)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_execute_runs_tool_and_broadcasts():
     """A task whose next_run_at is in the past should be executed by the loop."""
@@ -116,7 +124,12 @@ async def test_execute_runs_tool_and_broadcasts():
 
     sched_mod._gateway_ref = FakeGateway()
     try:
-        task = ScheduledTask(skill_id="demo", tool_name="ping", arguments={}, next_run_at=datetime.now(UTC) - timedelta(seconds=1))
+        task = ScheduledTask(
+            skill_id="demo",
+            tool_name="ping",
+            arguments={},
+            next_run_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
         s._tasks[task.id] = task
         await s._execute(task)
         assert task.runs_completed == 1
@@ -145,7 +158,13 @@ async def test_execute_max_runs_deactivates():
 
     sched_mod._gateway_ref = FakeGateway()
     try:
-        task = ScheduledTask(skill_id="demo", tool_name="ping", arguments={}, max_runs=1, next_run_at=datetime.now(UTC) - timedelta(seconds=1))
+        task = ScheduledTask(
+            skill_id="demo",
+            tool_name="ping",
+            arguments={},
+            max_runs=1,
+            next_run_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
         s._tasks[task.id] = task
         await s._execute(task)
         assert task.runs_completed == 1
@@ -203,11 +222,12 @@ async def test_loop_picks_up_due_task():
 # Skill interface
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_skill_schedule_task_no_gateway():
     """When gateway is None, skill tools return an error."""
-    from builtin_skills.scheduler import schedule_task, list_tasks, cancel_task, delete_task
     from aipet.gateway import scheduler as sched_mod
+    from builtin_skills.scheduler import cancel_task, delete_task, list_tasks, schedule_task
 
     old_ref = sched_mod._gateway_ref
     sched_mod._gateway_ref = None
@@ -222,8 +242,8 @@ async def test_skill_schedule_task_no_gateway():
 
 @pytest.mark.asyncio
 async def test_skill_schedule_task_with_gateway():
-    from builtin_skills.scheduler import schedule_task, list_tasks, cancel_task
     from aipet.gateway import scheduler as sched_mod
+    from builtin_skills.scheduler import cancel_task, list_tasks, schedule_task
 
     old_ref = sched_mod._gateway_ref
 

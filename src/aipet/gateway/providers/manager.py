@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import toml
-
-_logger = logging.getLogger("aipet.gateway.providers.manager")
 from pydantic import BaseModel, Field
 
 from aipet.gateway.providers.ai import AIProvider
@@ -18,6 +16,8 @@ from aipet.gateway.providers.ai_gemini import GeminiProvider
 from aipet.gateway.providers.ai_ollama import OllamaProvider
 from aipet.gateway.providers.ai_openai import OpenAIProvider
 from aipet.utils.paths import get_config_dir
+
+_logger = logging.getLogger("aipet.gateway.providers.manager")
 
 
 class ProviderEntry(BaseModel):
@@ -61,7 +61,7 @@ class ProviderManager:
                     first = self.providers[0]
                     self.current_model = first.models[0] if first.models else None
                     self.save()
-            except Exception as exc:
+            except Exception:
                 _logger.exception("Failed to load config")
                 self._init_defaults()
         else:
@@ -205,12 +205,16 @@ class ProviderManager:
             return EchoProvider(model_id=mid)
         elif entry.type == "gemini":
             if not entry.api_key:
-                _logger.warning("Gemini provider has no api_key, falling back to Echo", entry_id=entry.id)
+                _logger.warning(
+                    "Gemini provider has no api_key, falling back to Echo", entry_id=entry.id
+                )
                 return EchoProvider(model_id=mid)
             return GeminiProvider(api_key=entry.api_key, model_id=mid)
         elif entry.type == "openai":
             if not entry.api_key:
-                _logger.warning("OpenAI provider has no api_key, falling back to Echo", entry_id=entry.id)
+                _logger.warning(
+                    "OpenAI provider has no api_key, falling back to Echo", entry_id=entry.id
+                )
                 return EchoProvider(model_id=mid)
             return OpenAIProvider(
                 api_key=entry.api_key,

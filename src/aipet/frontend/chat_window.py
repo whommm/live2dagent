@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime
@@ -10,12 +11,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from markdown_it import MarkdownIt
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QMouseEvent, QTextDocument
-
 from pygments import highlight
-from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
+from pygments.lexers import get_lexer_by_name, guess_lexer
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QMouseEvent, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -36,8 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-
-from aipet.frontend.client import GatewayClient
+from aipet.frontend.client import GatewayClient, fire_and_forget
 from aipet.frontend.theme import MaterialTheme
 
 if TYPE_CHECKING:
@@ -84,8 +83,8 @@ class MessageBubble(QWidget):
 
     def _setup_ui(self, content: str, timestamp: str | None) -> None:
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 6, 8, 6)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(18, 10, 18, 10)
+        main_layout.setSpacing(6)
 
         self.time_label = QLabel(timestamp or "")
         self.time_label.setFont(QFont(MaterialTheme.font_family, 8))
@@ -98,10 +97,11 @@ class MessageBubble(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
 
         self.avatar = QLabel()
-        self.avatar.setFixedSize(36, 36)
+        self.avatar.setFixedSize(34, 34)
         self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.avatar.setStyleSheet(
-            f"background-color: {MaterialTheme.surface_variant}; border-radius: 18px; font-size: 16px;"
+            f"background-color: {MaterialTheme.surface_container_high}; color: {MaterialTheme.on_surface_variant}; "
+            "border: 1px solid rgba(126, 135, 148, 80); border-radius: 17px; font-size: 12px; font-weight: 700;"
         )
 
         # Content column: bubble container + toolbar
@@ -113,7 +113,7 @@ class MessageBubble(QWidget):
         # Bubble container handles background, radius, padding
         self.bubble_container = QWidget()
         bubble_layout = QVBoxLayout(self.bubble_container)
-        bubble_layout.setContentsMargins(12, 10, 12, 10)
+        bubble_layout.setContentsMargins(14, 11, 14, 11)
         bubble_layout.setSpacing(0)
 
         # Text display: QTextBrowser for assistant/markdown, QLabel for system/plain text
@@ -133,8 +133,16 @@ class MessageBubble(QWidget):
                 f"QTextBrowser {{ background-color: transparent; border: none; padding: 0px; color: {MaterialTheme.on_secondary_container}; }}"
                 f"QTextBrowser QAbstractScrollArea::viewport {{ background-color: transparent; }}"
             )
-            color = MaterialTheme.on_secondary_container if self.role == "assistant" else MaterialTheme.on_surface
-            browser.setHtml(self._markdown_to_html(self._clean_html_tags(self._strip_live2d_tags(content)), text_color=color))
+            color = (
+                MaterialTheme.on_secondary_container
+                if self.role == "assistant"
+                else MaterialTheme.on_surface
+            )
+            browser.setHtml(
+                self._markdown_to_html(
+                    self._clean_html_tags(self._strip_live2d_tags(content)), text_color=color
+                )
+            )
             self.text_display = browser
             bubble_layout.addWidget(self.text_display)
         else:
@@ -145,7 +153,7 @@ class MessageBubble(QWidget):
             self.text_display = label
             bubble_layout.addWidget(self.text_display)
 
-        self.text_display.setMaximumWidth(460)
+        self.text_display.setMaximumWidth(520)
         content_col.addWidget(self.bubble_container)
 
         # Toolbar with copy button (uses opacity effect to avoid layout resize)
@@ -154,53 +162,37 @@ class MessageBubble(QWidget):
         self.toolbar.setContentsMargins(0, 0, 0, 0)
         self.toolbar.addStretch()
 
-        self.copy_btn = QPushButton("📋")
+        self.copy_btn = QPushButton("复")
         self.copy_btn.setFixedSize(26, 26)
-        self.copy_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-            f"border: none; border-radius: 13px; font-size: 12px; padding: 0px; }}"
-            f"QPushButton:hover {{ background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 8)}; }}"
-        )
+        self.copy_btn.setStyleSheet(MaterialTheme.icon_button(size=26))
         self.copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.copy_btn.setToolTip("Copy message")
+        self.copy_btn.setToolTip("复制消息")
         self.copy_btn.clicked.connect(self._on_copy_clicked)
         self.toolbar.addWidget(self.copy_btn)
 
-        self.delete_btn = QPushButton("🗑️")
+        self.delete_btn = QPushButton("删")
         self.delete_btn.setFixedSize(26, 26)
-        self.delete_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-            f"border: none; border-radius: 13px; font-size: 12px; padding: 0px; }}"
-            f"QPushButton:hover {{ background-color: {MaterialTheme.error}; color: {MaterialTheme.on_error}; }}"
-        )
+        self.delete_btn.setStyleSheet(MaterialTheme.icon_button(size=26, danger=True))
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.delete_btn.setToolTip("Delete message")
+        self.delete_btn.setToolTip("删除消息")
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         self.toolbar.addWidget(self.delete_btn)
 
         # Regenerate for assistant, Edit for user
         if self.role == "assistant":
-            self.regenerate_btn = QPushButton("🔄")
+            self.regenerate_btn = QPushButton("重")
             self.regenerate_btn.setFixedSize(26, 26)
-            self.regenerate_btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-                f"border: none; border-radius: 13px; font-size: 12px; padding: 0px; }}"
-                f"QPushButton:hover {{ background-color: {MaterialTheme.primary_container}; color: {MaterialTheme.on_primary_container}; }}"
-            )
+            self.regenerate_btn.setStyleSheet(MaterialTheme.icon_button(size=26))
             self.regenerate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.regenerate_btn.setToolTip("Regenerate response")
+            self.regenerate_btn.setToolTip("重新生成")
             self.regenerate_btn.clicked.connect(self._on_regenerate_clicked)
             self.toolbar.addWidget(self.regenerate_btn)
         elif self.role == "user":
-            self.edit_btn = QPushButton("✏️")
+            self.edit_btn = QPushButton("改")
             self.edit_btn.setFixedSize(26, 26)
-            self.edit_btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-                f"border: none; border-radius: 13px; font-size: 12px; padding: 0px; }}"
-                f"QPushButton:hover {{ background-color: {MaterialTheme.primary_container}; color: {MaterialTheme.on_primary_container}; }}"
-            )
+            self.edit_btn.setStyleSheet(MaterialTheme.icon_button(size=26))
             self.edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.edit_btn.setToolTip("Edit and resend")
+            self.edit_btn.setToolTip("编辑并重发")
             self.edit_btn.clicked.connect(self._on_edit_clicked)
             self.toolbar.addWidget(self.edit_btn)
 
@@ -224,7 +216,7 @@ class MessageBubble(QWidget):
         content_col.addWidget(self._tool_status_label)
 
         if self.role == "user":
-            self.avatar.setText("👤")
+            self.avatar.setText("你")
             row.addStretch()
             row.addLayout(content_col)
             row.addWidget(self.avatar)
@@ -234,7 +226,7 @@ class MessageBubble(QWidget):
             row.addLayout(content_col)
             row.addStretch()
         else:
-            self.avatar.setText("🐾")
+            self.avatar.setText("AI")
             row.addWidget(self.avatar)
             row.addLayout(content_col)
             row.addStretch()
@@ -245,7 +237,8 @@ class MessageBubble(QWidget):
         if self.role == "user":
             # Use plain property syntax (no QWidget selector) to avoid cascading to children
             self.bubble_container.setStyleSheet(
-                f"background-color: {MaterialTheme.primary_container}; border-radius: 16px;"
+                f"background-color: {MaterialTheme.primary_container}; "
+                "border-radius: 16px; border: 1px solid rgba(79, 103, 165, 36);"
             )
             if isinstance(self.text_display, QLabel):
                 self.text_display.setStyleSheet(
@@ -268,7 +261,8 @@ class MessageBubble(QWidget):
             return
         else:
             self.bubble_container.setStyleSheet(
-                f"background-color: {MaterialTheme.secondary_container}; border-radius: 16px;"
+                f"background-color: {MaterialTheme.surface_container}; "
+                f"border: 1px solid {MaterialTheme.outline_variant}; border-radius: 16px;"
             )
             if isinstance(self.text_display, QLabel):
                 self.text_display.setStyleSheet(
@@ -303,7 +297,7 @@ class MessageBubble(QWidget):
             doc.setDefaultFont(self.text_display.font())
             doc.setPlainText(self.text_display.text())
             max_w = self.text_display.maximumWidth()
-            doc.setTextWidth(max_w if max_w > 0 else 460)
+            doc.setTextWidth(max_w if max_w > 0 else 520)
             new_height = max(int(doc.size().height()) + 8, 24)
             self.text_display.setFixedHeight(new_height)
             self.text_display.updateGeometry()
@@ -311,16 +305,13 @@ class MessageBubble(QWidget):
     def _on_copy_clicked(self) -> None:
         text = self.get_text()
         QApplication.clipboard().setText(text)
-        self.copy_btn.setText("✅")
+        self.copy_btn.setText("✓")
         QTimer.singleShot(1500, self._restore_copy_btn_text)
 
     def _restore_copy_btn_text(self) -> None:
         """Restore copy button text after a delay."""
-        try:
-            self.copy_btn.setText("📋")
-        except RuntimeError:
-            # Button was deleted before the timer fired
-            pass
+        with contextlib.suppress(RuntimeError):
+            self.copy_btn.setText("复")
 
     def _on_delete_clicked(self) -> None:
         self.delete_requested.emit(self.message_id)
@@ -335,9 +326,16 @@ class MessageBubble(QWidget):
     def _has_markdown(text: str) -> bool:
         """Quick heuristic to detect markdown formatting."""
         patterns = [
-            r"```", r"\*\*", r"__", r"`[^`]+`", r"^#{1,6} ",
-            r"^\s*[-*+] ", r"^\s*\d+\. ", r"\[.*?\]\(.*?\)",
-            r"^\s*> ", r"\n\s*---\s*\n",
+            r"```",
+            r"\*\*",
+            r"__",
+            r"`[^`]+`",
+            r"^#{1,6} ",
+            r"^\s*[-*+] ",
+            r"^\s*\d+\. ",
+            r"\[.*?\]\(.*?\)",
+            r"^\s*> ",
+            r"\n\s*---\s*\n",
         ]
         return any(re.search(p, text, re.MULTILINE) for p in patterns)
 
@@ -352,10 +350,7 @@ class MessageBubble(QWidget):
             # Unescape HTML entities that markdown-it encoded
             code = code.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
             try:
-                if lang:
-                    lexer = get_lexer_by_name(lang, stripall=True)
-                else:
-                    lexer = guess_lexer(code)
+                lexer = get_lexer_by_name(lang, stripall=True) if lang else guess_lexer(code)
                 formatter = HtmlFormatter(noclasses=True, nowrap=True, style="default")
                 highlighted = highlight(code, lexer, formatter)
             except Exception:
@@ -375,8 +370,14 @@ class MessageBubble(QWidget):
         )
         # Handle code blocks without language
         html = re.sub(
-            r'<pre><code>(.*?)</code></pre>',
-            lambda m: _replace_block(re.match(r'<pre><code class="language-([^"]*)">(.*?)</code></pre>', '<pre><code class="language-">' + m.group(1) + '</code></pre>', re.DOTALL)),
+            r"<pre><code>(.*?)</code></pre>",
+            lambda m: _replace_block(
+                re.match(
+                    r'<pre><code class="language-([^"]*)">(.*?)</code></pre>',
+                    '<pre><code class="language-">' + m.group(1) + "</code></pre>",
+                    re.DOTALL,
+                )
+            ),
             html,
             flags=re.DOTALL,
         )
@@ -437,7 +438,9 @@ class MessageBubble(QWidget):
     @staticmethod
     def _strip_live2d_tags(text: str) -> str:
         """Remove [expression:xxx], [motion:xxx], [pose:xxx], [emotion:xxx] and [prop:xxx] tags from displayed text."""
-        return re.sub(r"\[\s*(expression|motion|pose|emotion|prop)\s*:\s*[^\[\]]+?\s*\]", "", text).strip()
+        return re.sub(
+            r"\[\s*(expression|motion|pose|emotion|prop)\s*:\s*[^\[\]]+?\s*\]", "", text
+        ).strip()
 
     @staticmethod
     def _clean_html_tags(text: str) -> str:
@@ -468,11 +471,17 @@ class MessageBubble(QWidget):
             else:
                 current = self.text_display.toPlainText()
                 new_text = self._clean_html_tags(self._strip_live2d_tags(current + text))
-                color = MaterialTheme.on_secondary_container if self.role == "assistant" else MaterialTheme.on_surface
+                color = (
+                    MaterialTheme.on_secondary_container
+                    if self.role == "assistant"
+                    else MaterialTheme.on_surface
+                )
                 self.text_display.setHtml(self._markdown_to_html(new_text, text_color=color))
                 self._update_text_height()
         else:
-            self.text_display.setText(self._clean_html_tags(self._strip_live2d_tags(self.text_display.text() + text)))
+            self.text_display.setText(
+                self._clean_html_tags(self._strip_live2d_tags(self.text_display.text() + text))
+            )
 
     def set_streaming(self, streaming: bool) -> None:
         """Mark this bubble as being in a streaming state."""
@@ -487,13 +496,17 @@ class MessageBubble(QWidget):
         self._stream_buffer = ""
         if isinstance(self.text_display, QTextBrowser):
             final_text = self.text_display.toPlainText()
-            color = MaterialTheme.on_secondary_container if self.role == "assistant" else MaterialTheme.on_surface
+            color = (
+                MaterialTheme.on_secondary_container
+                if self.role == "assistant"
+                else MaterialTheme.on_surface
+            )
             self.text_display.setHtml(self._markdown_to_html(final_text, text_color=color))
             # Defer height calculation until the document layout is ready.
             QTimer.singleShot(0, self._update_text_height)
 
     def show_tool_status(self, text: str) -> None:
-        """Show a small status label below the bubble (e.g. '🔧 running xxx')."""
+        """Show a small status label below the bubble."""
         if self._tool_status_label is not None:
             self._tool_status_label.setText(text)
             self._tool_status_label.show()
@@ -506,7 +519,11 @@ class MessageBubble(QWidget):
     def set_text(self, text: str) -> None:
         cleaned = self._clean_html_tags(self._strip_live2d_tags(text))
         if isinstance(self.text_display, QTextBrowser):
-            color = MaterialTheme.on_secondary_container if self.role == "assistant" else MaterialTheme.on_surface
+            color = (
+                MaterialTheme.on_secondary_container
+                if self.role == "assistant"
+                else MaterialTheme.on_surface
+            )
             self.text_display.setHtml(self._markdown_to_html(cleaned, text_color=color))
             self._update_text_height()
         else:
@@ -557,21 +574,28 @@ class ToolCard(QWidget):
         header.setSpacing(8)
         header.setContentsMargins(0, 0, 0, 0)
 
-        self.icon_label = QLabel("🔧")
-        self.icon_label.setStyleSheet("font-size: 14px; border: none; background: transparent;")
+        self.icon_label = QLabel("工具")
+        self.icon_label.setStyleSheet(
+            f"font-size: 11px; font-weight: 700; color: {MaterialTheme.primary}; "
+            "border: none; background: transparent;"
+        )
 
         self.name_label = QLabel(self.name)
         self.name_label.setFont(QFont("JetBrains Mono", 11, QFont.Weight.Medium))
-        self.name_label.setStyleSheet(f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;")
+        self.name_label.setStyleSheet(
+            f"color: {MaterialTheme.on_surface_variant}; border: none; background: transparent;"
+        )
 
         # Argument summary (one-line)
         args_summary = self._fmt_args_summary(self.arguments)
         self.args_preview = QLabel(args_summary)
         self.args_preview.setFont(QFont("JetBrains Mono", 9))
-        self.args_preview.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        self.args_preview.setStyleSheet(
+            f"color: {MaterialTheme.outline}; border: none; background: transparent;"
+        )
         self.args_preview.setMaximumWidth(180)
 
-        self.status_label = QLabel("● running")
+        self.status_label = QLabel("● 运行中")
         self.status_label.setFont(QFont(MaterialTheme.font_family, 10))
         self.status_label.setStyleSheet(
             f"color: {MaterialTheme.primary}; border: none; background: transparent; "
@@ -586,7 +610,7 @@ class ToolCard(QWidget):
             f"QPushButton:hover {{ color: {MaterialTheme.on_surface}; background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 6)}; }}"
         )
         self.expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.expand_btn.setToolTip("Expand details")
+        self.expand_btn.setToolTip("展开详情")
         self.expand_btn.clicked.connect(self._toggle_expand)
 
         header.addWidget(self.icon_label)
@@ -605,14 +629,18 @@ class ToolCard(QWidget):
 
         # Arguments block
         args_block = QWidget()
-        args_block.setStyleSheet(f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;")
+        args_block.setStyleSheet(
+            f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;"
+        )
         args_block_layout = QVBoxLayout(args_block)
         args_block_layout.setContentsMargins(8, 6, 8, 6)
         args_block_layout.setSpacing(2)
 
-        args_title = QLabel("Arguments")
+        args_title = QLabel("参数")
         args_title.setFont(QFont(MaterialTheme.font_family, 9, QFont.Weight.Bold))
-        args_title.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        args_title.setStyleSheet(
+            f"color: {MaterialTheme.outline}; border: none; background: transparent;"
+        )
         args_block_layout.addWidget(args_title)
 
         self.args_detail = QLabel(self._fmt_dict_pretty(self.arguments))
@@ -627,14 +655,18 @@ class ToolCard(QWidget):
 
         # Result block
         self.result_block = QWidget()
-        self.result_block.setStyleSheet(f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;")
+        self.result_block.setStyleSheet(
+            f"background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 3)}; border-radius: 6px;"
+        )
         result_block_layout = QVBoxLayout(self.result_block)
         result_block_layout.setContentsMargins(8, 6, 8, 6)
         result_block_layout.setSpacing(2)
 
-        result_title = QLabel("Result")
+        result_title = QLabel("结果")
         result_title.setFont(QFont(MaterialTheme.font_family, 9, QFont.Weight.Bold))
-        result_title.setStyleSheet(f"color: {MaterialTheme.outline}; border: none; background: transparent;")
+        result_title.setStyleSheet(
+            f"color: {MaterialTheme.outline}; border: none; background: transparent;"
+        )
         result_block_layout.addWidget(result_title)
 
         self.result_text = QTextBrowser()
@@ -661,10 +693,11 @@ class ToolCard(QWidget):
     @staticmethod
     def _fmt_args_summary(arguments: dict[str, Any]) -> str:
         import json
+
         try:
             vals = list(arguments.values())
             if not vals:
-                return "(no args)"
+                return "(无参数)"
             preview = json.dumps(vals, ensure_ascii=False)
             if len(preview) > 50:
                 preview = preview[:47] + "..."
@@ -675,6 +708,7 @@ class ToolCard(QWidget):
     @staticmethod
     def _fmt_dict_pretty(d: dict[str, Any]) -> str:
         import json
+
         try:
             return json.dumps(d, ensure_ascii=False, indent=2)
         except Exception:
@@ -684,25 +718,28 @@ class ToolCard(QWidget):
         self._is_expanded = not self._is_expanded
         self.detail_widget.setVisible(self._is_expanded)
         self.expand_btn.setText("▾" if self._is_expanded else "▸")
-        self.expand_btn.setToolTip("Collapse details" if self._is_expanded else "Expand details")
+        self.expand_btn.setToolTip("收起详情" if self._is_expanded else "展开详情")
 
     def _set_status_color(self, color: str, bg_alpha: int = 12) -> None:
         self.strip.setStyleSheet(f"background-color: {color}; border-radius: 2px;")
         bg = MaterialTheme.rgba(color, bg_alpha)
         self.status_label.setStyleSheet(
-            f"color: {color}; border: none; background: {bg}; "
-            f"padding: 1px 6px; border-radius: 4px;"
+            f"color: {color}; border: none; background: {bg}; padding: 1px 6px; border-radius: 4px;"
         )
 
     def set_done(self, result: str, duration_ms: int = 0) -> None:
-        has_error = "error" in result.lower() or "exception" in result.lower() or result.startswith("Error")
+        has_error = (
+            "error" in result.lower() or "exception" in result.lower() or result.startswith("Error")
+        )
         if has_error:
-            self.icon_label.setText("⚠️")
-            self.status_label.setText("● done (warn)" if not duration_ms else f"● done (warn) · {duration_ms}ms")
+            self.icon_label.setText("警告")
+            self.status_label.setText(
+                "● 完成但有警告" if not duration_ms else f"● 完成但有警告 · {duration_ms}ms"
+            )
             self._set_status_color(MaterialTheme.error)
         else:
-            self.icon_label.setText("✅")
-            self.status_label.setText("● done" if not duration_ms else f"● done · {duration_ms}ms")
+            self.icon_label.setText("完成")
+            self.status_label.setText("● 完成" if not duration_ms else f"● 完成 · {duration_ms}ms")
             self._set_status_color("#4CAF50")
 
         self.result_text.setPlainText(result)
@@ -712,8 +749,8 @@ class ToolCard(QWidget):
             self._toggle_expand()
 
     def set_error(self, error: str) -> None:
-        self.icon_label.setText("❌")
-        self.status_label.setText("● failed")
+        self.icon_label.setText("失败")
+        self.status_label.setText("● 失败")
         self._set_status_color(MaterialTheme.error, 18)
         self.result_text.setPlainText(error)
         self.result_block.show()
@@ -733,40 +770,32 @@ class _TitleBar(QWidget):
 
     def _setup_ui(self) -> None:
         self.setStyleSheet(
-            f"background-color: {MaterialTheme.surface}; border-bottom: 1px solid {MaterialTheme.outline_variant};"
+            f"background-color: {MaterialTheme.surface_container}; border-bottom: 1px solid {MaterialTheme.outline_variant};"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 8, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 0, 10, 0)
+        layout.setSpacing(8)
 
-        self.title_label = QLabel("Chat with AIPet")
+        self.title_label = QLabel("AIPet")
         self.title_label.setStyleSheet(
-            f"color: {MaterialTheme.on_surface}; font-size: 14px; font-weight: 500; border: none;"
+            f"color: {MaterialTheme.on_surface}; font-size: 13px; font-weight: 700; border: none;"
         )
         layout.addWidget(self.title_label)
 
         # Connection status indicator
-        self.status_label = QLabel("● Online")
+        self.status_label = QLabel("● 在线")
         self.status_label.setStyleSheet(
-            "color: #4CAF50; font-size: 11px; border: none; font-weight: 500; padding: 2px 8px; "
-            "background-color: #E8F5E9; border-radius: 10px;"
+            f"color: {MaterialTheme.on_success_container}; font-size: 11px; border: none; "
+            f"font-weight: 600; padding: 3px 9px; background-color: {MaterialTheme.success_container}; "
+            "border-radius: 10px;"
         )
-        self.status_label.setToolTip("Connected to Gateway")
+        self.status_label.setToolTip("已连接到 Gateway")
         layout.addWidget(self.status_label)
 
         layout.addStretch()
 
-        btn_style = (
-            f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-            f"border: none; border-radius: 12px; font-size: 14px; font-weight: bold; padding: 4px 10px; }}"
-            f"QPushButton:hover {{ background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 8)}; }}"
-            f"QPushButton:pressed {{ background-color: {MaterialTheme._alpha(MaterialTheme.on_surface, 12)}; }}"
-        )
-        close_style = (
-            f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-            f"border: none; border-radius: 12px; font-size: 14px; font-weight: bold; padding: 4px 10px; }}"
-            f"QPushButton:hover {{ background-color: {MaterialTheme.error}; color: {MaterialTheme.on_error}; }}"
-        )
+        btn_style = MaterialTheme.icon_button(size=28)
+        close_style = MaterialTheme.icon_button(size=28, danger=True)
 
         self.min_btn = QPushButton("—")
         self.min_btn.setFixedSize(28, 28)
@@ -789,19 +818,19 @@ class _TitleBar(QWidget):
 
     def set_connected(self, connected: bool) -> None:
         if connected:
-            self.status_label.setText("● Online")
+            self.status_label.setText("● 在线")
             self.status_label.setStyleSheet(
-                f"color: {MaterialTheme.on_success_container}; font-size: 11px; border: none; font-weight: 500; padding: 2px 8px; "
+                f"color: {MaterialTheme.on_success_container}; font-size: 11px; border: none; font-weight: 600; padding: 3px 9px; "
                 f"background-color: {MaterialTheme.success_container}; border-radius: 10px;"
             )
-            self.status_label.setToolTip("Connected to Gateway")
+            self.status_label.setToolTip("已连接到 Gateway")
         else:
-            self.status_label.setText("● Offline")
+            self.status_label.setText("● 离线")
             self.status_label.setStyleSheet(
-                f"color: {MaterialTheme.on_error_container}; font-size: 11px; border: none; font-weight: 500; padding: 2px 8px; "
+                f"color: {MaterialTheme.on_error_container}; font-size: 11px; border: none; font-weight: 600; padding: 3px 9px; "
                 f"background-color: {MaterialTheme.error_container}; border-radius: 10px;"
             )
-            self.status_label.setToolTip("Disconnected from Gateway")
+            self.status_label.setToolTip("未连接到 Gateway")
 
     def _on_minimize(self) -> None:
         if self._win:
@@ -850,6 +879,7 @@ class ChatWindow(QWidget):
         self._providers: list[dict[str, Any]] = []
         self._current_provider_id: str | None = None
         self._current_model: str | None = None
+        self._provider_config_warning_shown = False
         self._current_session_id: str = ""
         self._session_items: dict[str, QListWidgetItem] = {}
         self._is_sending = False
@@ -859,20 +889,30 @@ class ChatWindow(QWidget):
         self._shown_disconnect_msg = False
         self._scroll_animation: QPropertyAnimation | None = None
         self._attachments: list[str] = []
+        self._tts_enabled: bool = False
         self._setup_ui()
         self._wire_events()
         self._start_connection_checker()
+        self.client.on_connect(self._on_gateway_connected)
         # Window fade-in animation
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self._opacity_effect.setOpacity(1.0)
         self.setGraphicsEffect(self._opacity_effect)
         self._show_animation: QPropertyAnimation | None = None
-        asyncio.ensure_future(self._load_providers())
-        asyncio.ensure_future(self._load_sessions())
+        self._schedule_initial_loads()
+
+    def _schedule_initial_loads(self) -> None:
+        """Load remote data when an asyncio loop is actively running."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        fire_and_forget(self._load_providers())
+        fire_and_forget(self._load_sessions())
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("Chat with AIPet")
-        self.resize(900, 720)
+        self.resize(980, 740)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setStyleSheet(f"background-color: {MaterialTheme.surface};")
 
@@ -888,18 +928,18 @@ class ChatWindow(QWidget):
 
         # ---------------- Left sidebar ----------------
         left_panel = QWidget()
-        left_panel.setMinimumWidth(220)
-        left_panel.setMaximumWidth(400)
+        left_panel.setMinimumWidth(240)
+        left_panel.setMaximumWidth(360)
         left_panel.setStyleSheet(
-            f"background-color: {MaterialTheme.surface}; border-right: 1px solid {MaterialTheme.outline_variant};"
+            f"background-color: {MaterialTheme.surface_container}; border-right: 1px solid {MaterialTheme.outline_variant};"
         )
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(12, 12, 12, 12)
-        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setSpacing(12)
 
-        self.new_chat_btn = QPushButton("+ New Chat")
+        self.new_chat_btn = QPushButton("+  新对话")
         self.new_chat_btn.setStyleSheet(MaterialTheme.filled_button())
-        self.new_chat_btn.setFixedHeight(40)
+        self.new_chat_btn.setFixedHeight(38)
         self.new_chat_btn.clicked.connect(lambda: asyncio.ensure_future(self._create_session()))
         left_layout.addWidget(self.new_chat_btn)
 
@@ -908,7 +948,7 @@ class ChatWindow(QWidget):
         self.session_list.setStyleSheet(
             f"""
             QListWidget {{
-                background-color: transparent;
+                background-color: {MaterialTheme.surface_container};
                 color: {MaterialTheme.on_surface};
                 border: none;
                 outline: none;
@@ -949,25 +989,31 @@ class ChatWindow(QWidget):
         # Top app bar with model selector
         top_bar = QWidget()
         top_bar.setStyleSheet(MaterialTheme.top_bar())
-        top_bar.setFixedHeight(64)
+        top_bar.setFixedHeight(66)
         top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(16, 8, 16, 8)
-        top_layout.setSpacing(8)
+        top_layout.setContentsMargins(22, 10, 18, 10)
+        top_layout.setSpacing(12)
 
-        app_title = QLabel("Chat")
+        app_title = QLabel("紫羽·琉璃")
         app_title.setStyleSheet(
-            f"color: {MaterialTheme.on_surface}; font-size: 22px; font-weight: 500; border: none;"
+            f"color: {MaterialTheme.on_surface}; font-size: 20px; font-weight: 700; border: none;"
         )
         top_layout.addWidget(app_title)
+        subtitle = QLabel("陪伴聊天")
+        subtitle.setStyleSheet(
+            f"color: {MaterialTheme.on_surface_variant}; font-size: 12px; border: none;"
+        )
+        top_layout.addWidget(subtitle)
         top_layout.addStretch()
 
         self.model_selector = QComboBox()
-        self.model_selector.setMinimumWidth(200)
+        self.model_selector.setMinimumWidth(220)
+        self.model_selector.setPlaceholderText("选择模型")
         self.model_selector.setStyleSheet(
             MaterialTheme.combo_box()
             + f"""
             QComboBox {{
-                background-color: {MaterialTheme.surface_variant};
+                background-color: {MaterialTheme.surface_container_high};
                 border-radius: 8px;
                 padding: 6px 14px;
                 font-size: 14px;
@@ -981,24 +1027,23 @@ class ChatWindow(QWidget):
         )
         self.model_selector.currentIndexChanged.connect(self._on_model_changed)
         top_layout.addWidget(self.model_selector)
-        top_layout.addStretch()
 
-        self.refresh_btn = QPushButton("🔄 Refresh")
-        self.refresh_btn.setFixedHeight(36)
-        self.refresh_btn.setStyleSheet(MaterialTheme.text_button())
-        self.refresh_btn.setToolTip("Refresh model list from gateway")
+        self.refresh_btn = QPushButton("刷")
+        self.refresh_btn.setFixedSize(34, 34)
+        self.refresh_btn.setStyleSheet(MaterialTheme.icon_button(size=34))
+        self.refresh_btn.setToolTip("刷新模型列表")
         self.refresh_btn.clicked.connect(lambda: asyncio.ensure_future(self._load_providers()))
 
-        self.manage_btn = QPushButton("⚙️ Providers")
-        self.manage_btn.setFixedHeight(36)
-        self.manage_btn.setStyleSheet(MaterialTheme.text_button())
-        self.manage_btn.setToolTip("Manage AI providers and API keys")
+        self.manage_btn = QPushButton("设")
+        self.manage_btn.setFixedSize(34, 34)
+        self.manage_btn.setStyleSheet(MaterialTheme.icon_button(size=34))
+        self.manage_btn.setToolTip("管理模型服务商和 API Key")
         self.manage_btn.clicked.connect(self._on_manage_providers)
 
-        self.clear_btn = QPushButton("🗑️ Clear")
-        self.clear_btn.setFixedHeight(36)
-        self.clear_btn.setStyleSheet(MaterialTheme.text_button())
-        self.clear_btn.setToolTip("Clear all messages in current session")
+        self.clear_btn = QPushButton("清")
+        self.clear_btn.setFixedSize(34, 34)
+        self.clear_btn.setStyleSheet(MaterialTheme.icon_button(size=34, danger=True))
+        self.clear_btn.setToolTip("清空当前会话")
         self.clear_btn.clicked.connect(lambda: asyncio.ensure_future(self._clear_current_session()))
 
         top_layout.addWidget(self.refresh_btn)
@@ -1019,8 +1064,8 @@ class ChatWindow(QWidget):
         self.messages_container = QWidget()
         self.messages_layout = QVBoxLayout(self.messages_container)
         self.messages_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.messages_layout.setSpacing(6)
-        self.messages_layout.setContentsMargins(10, 10, 10, 10)
+        self.messages_layout.setSpacing(2)
+        self.messages_layout.setContentsMargins(16, 16, 16, 16)
 
         # Empty state shown when no messages
         self._empty_state = self._build_empty_state()
@@ -1034,7 +1079,7 @@ class ChatWindow(QWidget):
         # Input area
         input_container = QWidget()
         input_container.setStyleSheet(
-            f"background-color: {MaterialTheme.surface}; border-top: 1px solid {MaterialTheme.outline_variant};"
+            f"background-color: {MaterialTheme.surface_container}; border-top: 1px solid {MaterialTheme.outline_variant};"
         )
         input_outer_layout = QVBoxLayout(input_container)
         input_outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -1043,7 +1088,7 @@ class ChatWindow(QWidget):
         # Attachments bar (shown when files are dropped)
         self.attachments_bar = QWidget()
         attachments_bar_layout = QHBoxLayout(self.attachments_bar)
-        attachments_bar_layout.setContentsMargins(12, 6, 12, 0)
+        attachments_bar_layout.setContentsMargins(16, 8, 16, 0)
         attachments_bar_layout.setSpacing(6)
         attachments_bar_layout.addStretch()
         self.attachments_bar.hide()
@@ -1052,20 +1097,22 @@ class ChatWindow(QWidget):
         # Input row
         input_row = QWidget()
         input_layout = QHBoxLayout(input_row)
-        input_layout.setContentsMargins(12, 10, 12, 10)
+        input_layout.setContentsMargins(16, 12, 16, 14)
         input_layout.setSpacing(10)
 
         # Voice input button (placeholder)
-        self.voice_btn = QPushButton("🎤")
-        self.voice_btn.setFixedSize(40, 40)
-        self.voice_btn.setStyleSheet(MaterialTheme.text_button())
-        self.voice_btn.setToolTip("Voice input (coming soon)")
+        self.voice_btn = QPushButton("◌")
+        self.voice_btn.setFixedSize(38, 38)
+        self.voice_btn.setStyleSheet(MaterialTheme.icon_button(size=38))
+        self.voice_btn.setToolTip("语音输入暂未开放")
         self.voice_btn.setEnabled(False)
         input_layout.addWidget(self.voice_btn)
 
         self.input_field = QTextEdit()
-        self.input_field.setPlaceholderText("Type a message... (Shift+Enter for new line)  Drop files here")
-        self.input_field.setMinimumHeight(56)
+        self.input_field.setPlaceholderText(
+            "输入消息，Shift+Enter 换行，也可以拖入文件"
+        )
+        self.input_field.setMinimumHeight(54)
         self.input_field.setMaximumHeight(200)
         self.input_field.setStyleSheet(MaterialTheme.outlined_input())
         self.input_field.installEventFilter(self)
@@ -1073,8 +1120,8 @@ class ChatWindow(QWidget):
         # Set initial height so the field doesn't use QTextEdit's large default preferred size
         self._on_input_text_changed()
 
-        self.send_button = QPushButton("Send")
-        self.send_button.setFixedSize(64, 40)
+        self.send_button = QPushButton("发送")
+        self.send_button.setFixedSize(70, 38)
         self.send_button.setStyleSheet(MaterialTheme.filled_button())
         self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_button.clicked.connect(self._on_send_clicked)
@@ -1082,7 +1129,7 @@ class ChatWindow(QWidget):
         self._send_btn_style = MaterialTheme.filled_button()
         self._stop_btn_style = (
             "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-            "stop:0 #ff6b6b, stop:1 #ee5a5a); color: white; border: none; "
+            "stop:0 #D44E4E, stop:1 #B93C3C); color: white; border: none; "
             "border-radius: 8px; font-weight: 600; font-size: 13px; padding: 0px; }"
             "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
             "stop:0 #ff8585, stop:1 #f06b6b); }"
@@ -1090,6 +1137,16 @@ class ChatWindow(QWidget):
             "stop:0 #e05555, stop:1 #d04a4a); }"
             "QPushButton:disabled { opacity: 0.5; }"
         )
+
+        # TTS toggle button
+        self.tts_toggle_btn = QPushButton("静")
+        self.tts_toggle_btn.setFixedSize(38, 38)
+        self.tts_toggle_btn.setStyleSheet(MaterialTheme.icon_button(size=38))
+        self.tts_toggle_btn.setToolTip("语音朗读已关闭，点击开启")
+        self.tts_toggle_btn.setCheckable(True)
+        self.tts_toggle_btn.setChecked(False)
+        self.tts_toggle_btn.clicked.connect(self._on_tts_toggle_clicked)
+        input_layout.addWidget(self.tts_toggle_btn)
 
         input_layout.addWidget(self.input_field, stretch=1)
         input_layout.addWidget(self.send_button, alignment=Qt.AlignmentFlag.AlignBottom)
@@ -1109,23 +1166,27 @@ class ChatWindow(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(12)
 
-        icon = QLabel("🐾")
-        icon.setStyleSheet("font-size: 48px; border: none; background: transparent;")
+        icon = QLabel("AI")
+        icon.setStyleSheet(
+            f"color: {MaterialTheme.primary}; font-size: 28px; font-weight: 800; "
+            f"border: 1px solid {MaterialTheme.outline_variant}; border-radius: 24px; "
+            f"background: {MaterialTheme.surface_container}; min-width: 48px; min-height: 48px;"
+        )
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("你好，主人~")
+        title = QLabel("你好，我在这里")
         title.setStyleSheet(
-            f"color: {MaterialTheme.on_surface}; font-size: 18px; font-weight: 500; border: none; background: transparent;"
+            f"color: {MaterialTheme.on_surface}; font-size: 18px; font-weight: 700; border: none; background: transparent;"
         )
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        subtitle = QLabel("我是紫羽·琉璃，点击输入框和我聊天吧！")
+        subtitle = QLabel("和紫羽·琉璃说点什么，或者拖入文件一起处理。")
         subtitle.setStyleSheet(
             f"color: {MaterialTheme.on_surface_variant}; font-size: 13px; border: none; background: transparent;"
         )
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        hint = QLabel("Shift + Enter 换行，Enter 发送")
+        hint = QLabel("Enter 发送，Shift + Enter 换行")
         hint.setStyleSheet(
             f"color: {MaterialTheme.outline}; font-size: 11px; border: none; background: transparent;"
         )
@@ -1193,6 +1254,22 @@ class ChatWindow(QWidget):
     # Connection status
     # ------------------------------------------------------------------
 
+    def _on_gateway_connected(self) -> None:
+        """Called when the Gateway connection is (re)established."""
+        fire_and_forget(self._sync_tts_settings())
+
+    async def _sync_tts_settings(self) -> None:
+        try:
+            settings = await self.client.request("system.get_settings")
+            tts_enabled = bool(settings.get("tts_auto_play", False))
+            self._tts_enabled = tts_enabled
+            self.tts_toggle_btn.blockSignals(True)
+            self.tts_toggle_btn.setChecked(tts_enabled)
+            self.tts_toggle_btn.blockSignals(False)
+            self._update_tts_button_appearance()
+        except Exception as exc:
+            self._logger.debug("Failed to sync TTS settings: %s", exc)
+
     def _start_connection_checker(self) -> None:
         self._connection_timer = QTimer(self)
         self._connection_timer.timeout.connect(self._check_connection)
@@ -1204,7 +1281,7 @@ class ChatWindow(QWidget):
         self.title_bar.set_connected(connected)
         if not connected:
             if not self._shown_disconnect_msg:
-                self.show_system_message("Disconnected from Gateway. Please restart the Gateway.", is_error=True)
+                self.show_system_message("未连接到 Gateway，请确认后台服务已启动。", is_error=True)
                 self._shown_disconnect_msg = True
         else:
             self._shown_disconnect_msg = False
@@ -1290,7 +1367,7 @@ class ChatWindow(QWidget):
             pill_layout.setContentsMargins(8, 2, 4, 2)
             pill_layout.setSpacing(4)
 
-            label = QLabel(f"📎 {name}")
+            label = QLabel(f"附件 {name}")
             label.setToolTip(path)
             label.setStyleSheet(
                 f"color: {MaterialTheme.on_primary_container}; font-size: 12px; "
@@ -1324,7 +1401,10 @@ class ChatWindow(QWidget):
             modifiers = event.modifiers()
 
             # Enter to send (no modifier)
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and modifiers == Qt.KeyboardModifier.NoModifier:
+            if (
+                key in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and modifiers == Qt.KeyboardModifier.NoModifier
+            ):
                 self._on_send_clicked()
                 return True
 
@@ -1334,7 +1414,11 @@ class ChatWindow(QWidget):
                 return True
 
             # Up arrow to recall last user message when input is empty
-            if key == Qt.Key.Key_Up and modifiers == Qt.KeyboardModifier.NoModifier and not self.input_field.toPlainText().strip():
+            if (
+                key == Qt.Key.Key_Up
+                and modifiers == Qt.KeyboardModifier.NoModifier
+                and not self.input_field.toPlainText().strip()
+            ):
                 self._recall_last_message()
                 return True
 
@@ -1402,34 +1486,55 @@ class ChatWindow(QWidget):
         for bubble in list(self._message_bubbles.values()):
             if getattr(bubble, "_is_streaming", False):
                 bubble.finish_streaming()
-        self.show_system_message("Generation stopped by user.")
+        self.show_system_message("已停止生成。")
+
+    def _on_tts_toggle_clicked(self) -> None:
+        """Toggle TTS on/off and sync to Gateway."""
+        enabled = self.tts_toggle_btn.isChecked()
+        self._tts_enabled = enabled
+        self._update_tts_button_appearance()
+        asyncio.ensure_future(
+            self.client.request("system.update_settings", {"tts_auto_play": enabled})
+        )
+        self.show_system_message(f"语音朗读已{'开启' if enabled else '关闭'}")
+
+    def _update_tts_button_appearance(self) -> None:
+        """Update the TTS toggle button icon and tooltip."""
+        if self._tts_enabled:
+            self.tts_toggle_btn.setText("声")
+            self.tts_toggle_btn.setToolTip("语音朗读已开启，点击静音")
+        else:
+            self.tts_toggle_btn.setText("静")
+            self.tts_toggle_btn.setToolTip("语音朗读已关闭，点击开启")
 
     async def _send_message(self, text: str, attachments: list[str]) -> None:
         try:
-            await self.client.send({
-                "type": "request",
-                "method": "chat.stream",
-                "payload": {
-                    "session_id": self._current_session_id or "main",
-                    "content": text,
-                    "attachments": attachments,
-                },
-            })
+            await self.client.send(
+                {
+                    "type": "request",
+                    "method": "chat.stream",
+                    "payload": {
+                        "session_id": self._current_session_id or "main",
+                        "content": text,
+                        "attachments": attachments,
+                    },
+                }
+            )
         except Exception as exc:
-            self.show_system_message(f"Failed to send: {exc}", is_error=True)
+            self.show_system_message(f"发送失败：{exc}", is_error=True)
             self._set_sending(False)
 
     def _set_sending(self, sending: bool) -> None:
         self._is_sending = sending
         self.send_button.setEnabled(True)  # Always enabled so user can stop
         if sending:
-            self.send_button.setText("Stop")
+            self.send_button.setText("停止")
             self.send_button.setStyleSheet(self._stop_btn_style)
-            self.send_button.setToolTip("Click to stop generating")
+            self.send_button.setToolTip("停止生成")
         else:
-            self.send_button.setText("Send")
+            self.send_button.setText("发送")
             self.send_button.setStyleSheet(self._send_btn_style)
-            self.send_button.setToolTip("Send message")
+            self.send_button.setToolTip("发送消息")
 
     # ------------------------------------------------------------------
     # Sessions
@@ -1446,7 +1551,7 @@ class ChatWindow(QWidget):
                 else:
                     await self._create_session()
         except Exception as exc:
-            self.show_system_message(f"Failed to load sessions: {exc}", is_error=True)
+            self.show_system_message(f"加载会话失败：{exc}", is_error=True)
 
     def _populate_session_list(self, sessions: list[dict[str, Any]]) -> None:
         self.session_list.clear()
@@ -1489,28 +1594,26 @@ class ChatWindow(QWidget):
             btn_layout.setContentsMargins(0, 0, 0, 0)
             btn_layout.setSpacing(4)
 
-            edit_btn = QPushButton("✏️")
+            edit_btn = QPushButton("改")
             edit_btn.setFixedSize(24, 24)
-            edit_btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-                f"border: none; border-radius: 12px; font-size: 12px; padding: 0px; }}"
-                f"QPushButton:hover {{ background-color: {MaterialTheme.primary_container}; color: {MaterialTheme.on_primary_container}; }}"
-            )
+            edit_btn.setStyleSheet(MaterialTheme.icon_button(size=24))
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            edit_btn.setToolTip("Rename session")
-            edit_btn.clicked.connect(lambda _checked=False, sid=sid: asyncio.ensure_future(self._rename_session_interactive(sid)))
+            edit_btn.setToolTip("重命名会话")
+            edit_btn.clicked.connect(
+                lambda _checked=False, sid=sid: asyncio.ensure_future(
+                    self._rename_session_interactive(sid)
+                )
+            )
             btn_layout.addWidget(edit_btn)
 
-            del_btn = QPushButton("🗑️")
+            del_btn = QPushButton("删")
             del_btn.setFixedSize(24, 24)
-            del_btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; color: {MaterialTheme.on_surface_variant}; "
-                f"border: none; border-radius: 12px; font-size: 12px; padding: 0px; }}"
-                f"QPushButton:hover {{ background-color: {MaterialTheme.error}; color: {MaterialTheme.on_error}; }}"
-            )
+            del_btn.setStyleSheet(MaterialTheme.icon_button(size=24, danger=True))
             del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            del_btn.setToolTip("Delete session")
-            del_btn.clicked.connect(lambda _checked=False, sid=sid: asyncio.ensure_future(self._delete_session(sid)))
+            del_btn.setToolTip("删除会话")
+            del_btn.clicked.connect(
+                lambda _checked=False, sid=sid: asyncio.ensure_future(self._delete_session(sid))
+            )
             btn_layout.addWidget(del_btn)
 
             btn_container.hide()
@@ -1547,8 +1650,8 @@ class ChatWindow(QWidget):
             return
 
         menu = QMenu(self)
-        rename_action = menu.addAction("✏️ 重命名")
-        delete_action = menu.addAction("🗑️ 删除")
+        rename_action = menu.addAction("重命名")
+        delete_action = menu.addAction("删除")
         action = menu.exec(self.session_list.mapToGlobal(position))
         if action == rename_action:
             asyncio.ensure_future(self._rename_session_interactive(sid))
@@ -1567,9 +1670,11 @@ class ChatWindow(QWidget):
             try:
                 await self.client.request("session.set_current", {"session_id": session_id})
             except Exception as exc:
-                self.show_system_message(f"Failed to set current session: {exc}", is_error=True)
+                self.show_system_message(f"切换会话失败：{exc}", is_error=True)
             try:
-                resp = await self.client.request("chat.history", {"session_id": session_id, "limit": 100})
+                resp = await self.client.request(
+                    "chat.history", {"session_id": session_id, "limit": 100}
+                )
                 messages = resp.get("messages", [])
                 # Hide empty state immediately before loading any messages so it
                 # doesn't float above partially-loaded history.
@@ -1594,27 +1699,49 @@ class ChatWindow(QWidget):
                             except Exception:
                                 ts = ""
                         if role == "user":
-                            bubble = MessageBubble("user", content, timestamp=ts, message_id=msg_id, parent=self.messages_container, animate=False)
+                            bubble = MessageBubble(
+                                "user",
+                                content,
+                                timestamp=ts,
+                                message_id=msg_id,
+                                parent=self.messages_container,
+                                animate=False,
+                            )
                             bubble.delete_requested.connect(self._on_bubble_delete_requested)
                             bubble.edit_requested.connect(self._on_bubble_edit_requested)
-                            self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+                            self.messages_layout.insertWidget(
+                                self.messages_layout.count() - 1, bubble
+                            )
                             self._message_bubbles[msg_id] = bubble
                             last_bubble = bubble
                         elif role == "assistant":
-                            bubble = MessageBubble("assistant", content, timestamp=ts, message_id=msg_id, parent=self.messages_container, animate=False)
+                            bubble = MessageBubble(
+                                "assistant",
+                                content,
+                                timestamp=ts,
+                                message_id=msg_id,
+                                parent=self.messages_container,
+                                animate=False,
+                            )
                             bubble.delete_requested.connect(self._on_bubble_delete_requested)
-                            bubble.regenerate_requested.connect(self._on_bubble_regenerate_requested)
-                            self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+                            bubble.regenerate_requested.connect(
+                                self._on_bubble_regenerate_requested
+                            )
+                            self.messages_layout.insertWidget(
+                                self.messages_layout.count() - 1, bubble
+                            )
                             self._message_bubbles[msg_id] = bubble
                             last_bubble = bubble
                     if i + batch_size < len(messages):
                         await asyncio.sleep(0)  # yield to event loop
                 if last_bubble is not None:
                     # Defer scrolling so queued paint events finish first.
-                    QTimer.singleShot(0, lambda b=last_bubble: self.scroll_area.ensureWidgetVisible(b, 0, 0))
+                    QTimer.singleShot(
+                        0, lambda b=last_bubble: self.scroll_area.ensureWidgetVisible(b, 0, 0)
+                    )
                     self._scroll_to_bottom()
             except Exception as exc:
-                self.show_system_message(f"Failed to load history: {exc}", is_error=True)
+                self.show_system_message(f"加载历史消息失败：{exc}", is_error=True)
         finally:
             self._is_switching = False
 
@@ -1644,19 +1771,19 @@ class ChatWindow(QWidget):
 
     async def _create_session(self) -> None:
         try:
-            resp = await self.client.request("session.create", {"name": "New Session"})
+            resp = await self.client.request("session.create", {"name": "新对话"})
             session = resp.get("session", {})
             sid = session.get("id", "")
             await self._load_sessions()
             if sid:
                 await self._switch_session(sid)
         except Exception as exc:
-            self.show_system_message(f"Failed to create session: {exc}", is_error=True)
+            self.show_system_message(f"创建会话失败：{exc}", is_error=True)
 
     async def _delete_session(self, session_id: str) -> None:
         confirmed = await self._async_question(
-            "Confirm Delete",
-            "Are you sure you want to delete this session?\nThis action cannot be undone.",
+            "删除会话",
+            "确定要删除这个会话吗？\n此操作无法撤销。",
         )
         if not confirmed:
             return
@@ -1671,15 +1798,15 @@ class ChatWindow(QWidget):
                     else:
                         await self._create_session()
         except Exception as exc:
-            self.show_system_message(f"Failed to delete session: {exc}", is_error=True)
+            self.show_system_message(f"删除会话失败：{exc}", is_error=True)
 
     async def _clear_current_session(self) -> None:
         """Clear all messages in the current session."""
         if not self._current_session_id:
             return
         confirmed = await self._async_question(
-            "Confirm Clear",
-            "Are you sure you want to clear all messages in this session?\nThis action cannot be undone.",
+            "清空会话",
+            "确定要清空当前会话的所有消息吗？\n此操作无法撤销。",
         )
         if not confirmed:
             return
@@ -1688,7 +1815,7 @@ class ChatWindow(QWidget):
             if resp.get("success"):
                 self._clear_messages()
         except Exception as exc:
-            self.show_system_message(f"Failed to clear session: {exc}", is_error=True)
+            self.show_system_message(f"清空会话失败：{exc}", is_error=True)
 
     async def _rename_session_interactive(self, session_id: str) -> None:
         """Rename a session via a simple input dialog."""
@@ -1702,14 +1829,16 @@ class ChatWindow(QWidget):
                     if label:
                         current_name = label.property("session_name") or label.text()
                 break
-        name, ok = await self._async_get_text("Rename Session", "New name:", text=current_name)
+        name, ok = await self._async_get_text("重命名会话", "新名称：", text=current_name)
         if ok and name.strip():
             try:
-                resp = await self.client.request("session.rename", {"session_id": session_id, "name": name.strip()})
+                resp = await self.client.request(
+                    "session.rename", {"session_id": session_id, "name": name.strip()}
+                )
                 if resp.get("success"):
                     await self._load_sessions()
             except Exception as exc:
-                self.show_system_message(f"Failed to rename session: {exc}", is_error=True)
+                self.show_system_message(f"重命名会话失败：{exc}", is_error=True)
 
     async def _async_question(self, title: str, text: str) -> bool:
         """Show a non-blocking QMessageBox and await the result."""
@@ -1719,13 +1848,16 @@ class ChatWindow(QWidget):
         msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg_box.setDefaultButton(QMessageBox.StandardButton.No)
         future = asyncio.get_running_loop().create_future()
-        msg_box.finished.connect(lambda result: future.set_result(result == QMessageBox.StandardButton.Yes))
+        msg_box.finished.connect(
+            lambda result: future.set_result(result == QMessageBox.StandardButton.Yes)
+        )
         msg_box.open()
         return await future
 
     async def _async_get_text(self, title: str, label: str, text: str = "") -> tuple[str, bool]:
         """Show a non-blocking QInputDialog and await the result."""
         from PySide6.QtWidgets import QInputDialog
+
         dialog = QInputDialog(self)
         dialog.setWindowTitle(title)
         dialog.setLabelText(label)
@@ -1748,8 +1880,26 @@ class ChatWindow(QWidget):
             self._current_provider_id = current_data.get("current_provider_id")
             self._current_model = current_data.get("current_model")
             self._populate_model_selector()
+            self._show_provider_config_hint(current_data)
         except Exception as exc:
-            self.show_system_message(f"Failed to load providers: {exc}", is_error=True)
+            self.show_system_message(f"加载模型服务商失败：{exc}", is_error=True)
+
+    def _show_provider_config_hint(self, current_data: dict[str, Any]) -> None:
+        if self._provider_config_warning_shown:
+            return
+        if current_data.get("is_configured", True):
+            return
+        provider = current_data.get("provider") or {}
+        provider_name = (
+            provider.get("name") or current_data.get("current_provider_id") or "current provider"
+        )
+        config_path = current_data.get("config_path") or "config/providers.toml"
+        self.show_system_message(
+            f"{provider_name} 缺少 API Key，当前会降级为本地 Echo。"
+            f"请点击右上角设置按钮配置，或编辑 {config_path}。",
+            is_error=True,
+        )
+        self._provider_config_warning_shown = True
 
     def _populate_model_selector(self) -> None:
         self.model_selector.blockSignals(True)
@@ -1779,13 +1929,13 @@ class ChatWindow(QWidget):
                 {"provider_id": provider_id, "model": model},
             )
             if not resp.get("success"):
-                self.show_system_message("Failed to switch model: invalid provider or model.")
+                self.show_system_message("切换模型失败：服务商或模型无效。", is_error=True)
                 self._populate_model_selector()
                 return
             self._current_provider_id = provider_id
             self._current_model = model
         except Exception as exc:
-            self.show_system_message(f"Failed to set model: {exc}", is_error=True)
+            self.show_system_message(f"设置模型失败：{exc}", is_error=True)
             self._populate_model_selector()
 
     def _on_manage_providers(self) -> None:
@@ -1820,8 +1970,8 @@ class ChatWindow(QWidget):
         """Remove a single bubble from the UI."""
         reply = QMessageBox.question(
             self,
-            "Confirm Delete",
-            "Delete this message?",
+            "删除消息",
+            "确定要删除这条消息吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1853,7 +2003,9 @@ class ChatWindow(QWidget):
                 user_text = widget.get_text()
                 break
         if not user_text:
-            self.show_system_message("Cannot regenerate: no preceding user message found.", is_error=True)
+            self.show_system_message(
+                "无法重新生成：没有找到上一条用户消息。", is_error=True
+            )
             return
         # Remove the assistant bubble
         self._on_bubble_delete_requested(message_id)
@@ -1871,7 +2023,11 @@ class ChatWindow(QWidget):
             if item is None:
                 continue
             widget = item.widget()
-            if isinstance(widget, MessageBubble) and widget.message_id == message_id and widget.role == "user":
+            if (
+                isinstance(widget, MessageBubble)
+                and widget.message_id == message_id
+                and widget.role == "user"
+            ):
                 edit_text = widget.get_text()
                 edit_idx = i
                 break
@@ -1903,11 +2059,8 @@ class ChatWindow(QWidget):
         ts = datetime.now().strftime("%H:%M")
         display_text = text
         if attachments:
-            file_lines = "\n".join(f"📎 {Path(a).name}" for a in attachments)
-            if display_text:
-                display_text = f"{display_text}\n\n{file_lines}"
-            else:
-                display_text = file_lines
+            file_lines = "\n".join(f"附件 {Path(a).name}" for a in attachments)
+            display_text = f"{display_text}\n\n{file_lines}" if display_text else file_lines
         bubble = MessageBubble("user", display_text, timestamp=ts, parent=self.messages_container)
         bubble.delete_requested.connect(self._on_bubble_delete_requested)
         bubble.edit_requested.connect(self._on_bubble_edit_requested)
@@ -1930,7 +2083,9 @@ class ChatWindow(QWidget):
         msg_id = payload.get("message_id", "")
         self._show_typing_indicator()
         ts = datetime.now().strftime("%H:%M")
-        bubble = MessageBubble("assistant", "", timestamp=ts, message_id=msg_id, parent=self.messages_container)
+        bubble = MessageBubble(
+            "assistant", "", timestamp=ts, message_id=msg_id, parent=self.messages_container
+        )
         bubble.set_streaming(True)
         bubble.delete_requested.connect(self._on_bubble_delete_requested)
         bubble.regenerate_requested.connect(self._on_bubble_regenerate_requested)
@@ -1959,7 +2114,7 @@ class ChatWindow(QWidget):
         if bubble:
             if has_tool_calls:
                 # Keep bubble in streaming state while tools execute
-                bubble.show_tool_status("🔧 正在分析...")
+                bubble.show_tool_status("正在分析...")
             else:
                 bubble.finish_streaming()
         else:
@@ -1967,7 +2122,7 @@ class ChatWindow(QWidget):
             for b in self._message_bubbles.values():
                 if getattr(b, "_is_streaming", False):
                     if has_tool_calls:
-                        b.show_tool_status("🔧 正在分析...")
+                        b.show_tool_status("正在分析...")
                     else:
                         b.finish_streaming()
                     break
@@ -1987,11 +2142,15 @@ class ChatWindow(QWidget):
             names_str = ", ".join(tool_names[:3])
             if len(tool_names) > 3:
                 names_str += f" 等{len(tool_names)}个"
-            bubble.show_tool_status(f"🔧 正在执行: {names_str}...")
+            bubble.show_tool_status(f"正在执行：{names_str}...")
             self._scroll_to_bottom()
 
     def _on_chat_proactive(self, payload: dict[str, Any]) -> None:
-        self._logger.debug("Received chat.proactive: session=%s, content=%r", payload.get('session_id'), payload.get('content', '')[:30])
+        self._logger.debug(
+            "Received chat.proactive: session=%s, content=%r",
+            payload.get("session_id"),
+            payload.get("content", "")[:30],
+        )
         sid = payload.get("session_id", "")
         content = payload.get("content", "")
         msg_id = payload.get("message_id", "")
@@ -2010,7 +2169,7 @@ class ChatWindow(QWidget):
         self._add_assistant_bubble(content, msg_id, timestamp)
 
     def _on_system_error(self, payload: dict[str, Any]) -> None:
-        self.show_system_message(f"Error: {payload.get('message', 'Unknown error')}", is_error=True)
+        self.show_system_message(f"发生错误：{payload.get('message', '未知错误')}", is_error=True)
         self._set_sending(False)
 
     def _on_tool_start(self, payload: dict[str, Any]) -> None:
@@ -2029,7 +2188,7 @@ class ChatWindow(QWidget):
         # Update the latest assistant bubble to show which tool is running
         for bubble in reversed(list(self._message_bubbles.values())):
             if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
-                bubble.show_tool_status(f"🔧 正在执行: {name}...")
+                bubble.show_tool_status(f"正在执行：{name}...")
                 break
 
     def _on_tool_result(self, payload: dict[str, Any]) -> None:
@@ -2043,7 +2202,7 @@ class ChatWindow(QWidget):
         # Update bubble status to show completion of this tool
         for bubble in reversed(list(self._message_bubbles.values())):
             if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
-                bubble.show_tool_status(f"🔧 等待下一步...")
+                bubble.show_tool_status("等待下一步...")
                 break
 
     def _on_tool_error(self, payload: dict[str, Any]) -> None:
@@ -2061,7 +2220,7 @@ class ChatWindow(QWidget):
         # Also update the assistant bubble
         for bubble in reversed(list(self._message_bubbles.values())):
             if bubble.role == "assistant" and getattr(bubble, "_is_streaming", False):
-                bubble.show_tool_status(f"❌ {name} 失败")
+                bubble.show_tool_status(f"{name} 失败")
                 break
 
     def _add_assistant_bubble(self, text: str, msg_id: str = "", timestamp: str = "") -> None:
@@ -2073,7 +2232,9 @@ class ChatWindow(QWidget):
             bubble.hide_tool_status()
             self._set_sending(False)
             return
-        bubble = MessageBubble("assistant", text, timestamp=ts, message_id=msg_id, parent=self.messages_container)
+        bubble = MessageBubble(
+            "assistant", text, timestamp=ts, message_id=msg_id, parent=self.messages_container
+        )
         bubble.delete_requested.connect(self._on_bubble_delete_requested)
         bubble.regenerate_requested.connect(self._on_bubble_regenerate_requested)
         if msg_id:
@@ -2094,11 +2255,13 @@ class ChatWindow(QWidget):
 
     def _show_typing_indicator(self) -> None:
         if self._typing_indicator is None:
-            self._typing_indicator = QLabel("🐾 正在输入...")
+            self._typing_indicator = QLabel("正在输入...")
             self._typing_indicator.setStyleSheet(
                 f"QLabel {{ color: {MaterialTheme.outline}; padding: 6px 12px; font-size: 12px; }}"
             )
-            self.messages_layout.insertWidget(self.messages_layout.count() - 1, self._typing_indicator)
+            self.messages_layout.insertWidget(
+                self.messages_layout.count() - 1, self._typing_indicator
+            )
             self._scroll_to_bottom()
 
     def _hide_typing_indicator(self) -> None:

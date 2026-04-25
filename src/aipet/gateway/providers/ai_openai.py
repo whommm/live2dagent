@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-
-import logging
 
 import httpx
 
@@ -70,11 +69,13 @@ class OpenAIProvider:
                         args = tc.get("arguments", {})
                         if isinstance(args, dict):
                             args = _json.dumps(args)
-                        formatted_calls.append({
-                            "id": tc.get("id", tc.get("name", f"call_{uuid.uuid4().hex}")),
-                            "type": "function",
-                            "function": {"name": tc.get("name", ""), "arguments": args},
-                        })
+                        formatted_calls.append(
+                            {
+                                "id": tc.get("id", tc.get("name", f"call_{uuid.uuid4().hex}")),
+                                "type": "function",
+                                "function": {"name": tc.get("name", ""), "arguments": args},
+                            }
+                        )
                 msg["tool_calls"] = formatted_calls
                 # When an assistant message carries native tool_calls, the
                 # content must be empty/null (OpenAI format requirement).
@@ -112,9 +113,7 @@ class OpenAIProvider:
                     [tc.get("id") for tc in om["tool_calls"]],
                 )
             elif om.get("role") == "tool":
-                _logger.info(
-                    "Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id")
-                )
+                _logger.info("Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id"))
         return payload
 
     async def chat(
@@ -183,7 +182,9 @@ class OpenAIProvider:
                                             "id": tc.get("id", ""),
                                             "type": tc.get("type", "function"),
                                             "name": tc.get("function", {}).get("name", ""),
-                                            "arguments": tc.get("function", {}).get("arguments", ""),
+                                            "arguments": tc.get("function", {}).get(
+                                                "arguments", ""
+                                            ),
                                         }
                                     else:
                                         # Append to existing
@@ -212,16 +213,27 @@ class OpenAIProvider:
                                         args = _json.loads(args_str) if args_str else {}
                                     except _json.JSONDecodeError:
                                         args = {}
-                                    parsed_calls.append({
-                                        "id": tc.get("id", ""),
-                                        "name": tc.get("name", ""),
-                                        "arguments": args,
-                                    })
-                                yield Chunk(delta="", finish_reason="tool_calls", tool_calls=parsed_calls, reasoning_content=reasoning_content)
+                                    parsed_calls.append(
+                                        {
+                                            "id": tc.get("id", ""),
+                                            "name": tc.get("name", ""),
+                                            "arguments": args,
+                                        }
+                                    )
+                                yield Chunk(
+                                    delta="",
+                                    finish_reason="tool_calls",
+                                    tool_calls=parsed_calls,
+                                    reasoning_content=reasoning_content,
+                                )
                                 return
 
                             if finish and finish != "tool_calls":
-                                yield Chunk(delta="", finish_reason=finish, reasoning_content=reasoning_content)
+                                yield Chunk(
+                                    delta="",
+                                    finish_reason=finish,
+                                    reasoning_content=reasoning_content,
+                                )
                                 return
                         except Exception:
                             continue
@@ -234,7 +246,10 @@ class OpenAIProvider:
                     decoded = exc_msg.split(": ", 1)[-1] if ": " in exc_msg else exc_msg
 
                     msg_summary = " | ".join(
-                        f"{m.get('role')}({len(m.get('content') or '')}c{'+tc' if m.get('tool_calls') else ''})"
+                        (
+                            f"{m.get('role')}({len(m.get('content') or '')}c"
+                            f"{'+tc' if m.get('tool_calls') else ''})"
+                        )
                         for m in payload.get("messages", [])
                     )
                     _logger.error(
@@ -259,7 +274,7 @@ class OpenAIProvider:
                     "role": "system",
                     "content": "Summarize the following conversation into one short paragraph.",
                 },
-                * [{"role": m.role, "content": m.content or ""} for m in messages],
+                *[{"role": m.role, "content": m.content or ""} for m in messages],
             ],
             "stream": False,
             "max_tokens": 256,
