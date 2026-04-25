@@ -749,6 +749,22 @@ class Gateway:
 
         return calls if calls else None
 
+    def _filter_tools_by_names(
+        self, tool_names: list[str]
+    ) -> tuple[list[dict[str, str]], list[Any]]:
+        """Return only the briefs and full schemas for the requested tool names.
+
+        This shrinks the re-query context in Phase-2 so the model is not
+        distracted by unrelated tools.
+        """
+        all_briefs = self.skills.list_tools_brief()
+        name_set = set(tool_names)
+        briefs = [b for b in all_briefs if b["name"] in name_set]
+
+        all_tools = self.skills.list_tools() if self.skills else []
+        tools = [t for t in all_tools if t.function.get("name", "") in name_set]
+        return briefs, tools
+
     async def _resolve_tool_calls(
         self,
         session_id: str,
@@ -760,9 +776,6 @@ class Gateway:
         """If the AI response contains tool calls, execute them and get the final reply."""
 
         ai_provider = self.provider_manager.create_ai_provider()
-        # Pass native tool schemas so providers that enforce strict message
-        # sequencing (e.g. DeepSeek V4) accept tool role messages.
-        tools = self.skills.list_tools() if self.skills else []
         full_text = initial_text.strip()
 
         parsed = raw_tool_calls if raw_tool_calls is not None else self._parse_tool_calls(full_text)
@@ -883,7 +896,18 @@ class Gateway:
                 await self.sessions.add_message(session_id, tool_msg)
 
             self._logger.debug("Re-querying AI", loop_idx=loop_idx)
-            ai_messages = self._build_ai_messages(session_id, include_tools=True)
+
+            # Phase-2 optimisation: only include the tools that were actually
+            # invoked in the previous round.  This keeps the context small and
+            # prevents the model from being distracted by unrelated skills.
+            active_tool_names = [tc.get("name", "") for tc in parsed]
+            tool_briefs, tools = self._filter_tools_by_names(active_tool_names)
+            ai_messages = self._build_ai_messages(
+                session_id,
+                include_tools=True,
+                include_live2d_tags=True,
+                tool_briefs=tool_briefs,
+            )
             full_text = ""
             reasoning_text = ""
             next_raw_tool_calls: list[dict[str, Any]] | None = None
