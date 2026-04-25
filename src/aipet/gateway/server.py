@@ -30,6 +30,8 @@ from aipet.gateway.session import SessionManager
 from aipet.gateway.skills.registry import SkillRegistry
 from aipet.gateway.skills.router import ToolRouter
 from aipet.gateway.state import AppState, ClientInfo, ProviderStatus, StateStore
+from aipet.gateway.streaming import ToolCallStreamGuard
+from aipet.gateway.tool_decision import ToolDecider
 from aipet.utils.paths import ensure_directories, get_config_dir, get_project_root
 
 _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -485,9 +487,17 @@ class Gateway:
         return result
 
     def _build_ai_messages(
-        self, session_id: str, include_tools: bool = True, include_live2d_tags: bool = False
+        self,
+        session_id: str,
+        include_tools: bool = True,
+        include_live2d_tags: bool = False,
+        tool_briefs: list[dict[str, str]] | None = None,
     ) -> list[Any]:
-        """Build the message list for the AI provider from session context."""
+        """Build the message list for the AI provider from session context.
+
+        *tool_briefs* allows overriding the full skill list when using
+        dynamic tool selection (Phase-1 decision flow).
+        """
         from aipet.gateway.providers.ai import Message as AIMessage
 
         soul = self._read_soul()
@@ -501,7 +511,7 @@ class Gateway:
             system_parts.append(f"# Session Summary\n{session.memory_summary}")
 
         if include_tools:
-            briefs = self.skills.list_tools_brief()
+            briefs = tool_briefs if tool_briefs is not None else self.skills.list_tools_brief()
             if briefs:
                 tool_desc = (
                     "You have access to the following tools. "
@@ -1178,6 +1188,18 @@ class Gateway:
         )
         await self._play_tts(assistant_msg.content)
 
+    def _select_candidate_tools(self, user_content: str) -> list[dict[str, str]]:
+        """Return candidate tool briefs for Phase-1 decision.
+
+        First revision returns all available briefs (future: keyword/embedding
+        ranking).  Respects ``config.phase1_max_candidate_tools``.
+        """
+        briefs = self.skills.list_tools_brief()
+        max_k = self.config.phase1_max_candidate_tools
+        if max_k and len(briefs) > max_k:
+            briefs = briefs[:max_k]
+        return briefs
+
     async def _handle_chat_stream(self, client_id: str, payload: dict[str, Any]) -> None:
         """Handle streaming chat message."""
         self._last_user_activity = time.time()
@@ -1218,15 +1240,58 @@ class Gateway:
                 client_id,
                 f"Provider '{current_entry.name}' is missing API key. Falling back to Echo.",
             )
-        # Force ALL providers to use text-mode two-phase tool calling.
-        # This ensures every model follows: brief -> system:get_tool_schema -> actual tool.
+        # ------------------------------------------------------------------
+        # Phase 1: decide whether tools are needed (optional, config-driven)
+        # ------------------------------------------------------------------
+        tool_briefs: list[dict[str, str]] | None = None
+        include_tools = True
+
+        if self.config.tool_calling_strategy == "phase1_decision":
+            candidate_briefs = self._select_candidate_tools(content)
+            if candidate_briefs:
+                decider = ToolDecider(
+                    ai_provider, max_tokens=self.config.phase1_max_tokens
+                )
+                try:
+                    decision = await decider.decide(content, candidate_briefs)
+                except Exception:
+                    self._logger.exception("Phase-1 decision failed; falling back to legacy")
+                    decision = None
+
+                if decision and decision.action == "direct":
+                    include_tools = False
+                    self._logger.info("Phase-1 decision: direct reply")
+                elif decision and decision.selected_tools:
+                    selected_names = {t.name for t in decision.selected_tools}
+                    tool_briefs = [
+                        b for b in candidate_briefs if b["name"] in selected_names
+                    ]
+                    self._logger.info(
+                        "Phase-1 decision: use tools",
+                        selected=[b["name"] for b in tool_briefs],
+                    )
+                else:
+                    self._logger.info(
+                        "Phase-1 decision: fallback to legacy (no tools matched)"
+                    )
+            else:
+                include_tools = False
+
         ai_messages = self._build_ai_messages(
-            session.id, include_tools=True, include_live2d_tags=True
+            session.id,
+            include_tools=include_tools,
+            include_live2d_tags=True,
+            tool_briefs=tool_briefs,
         )
         tools = None
         full_text = ""
         reasoning_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
+        guard = (
+            ToolCallStreamGuard()
+            if self.config.enable_streaming_guard
+            else None
+        )
         try:
             async for chunk in ai_provider.chat(ai_messages, tools=tools):
                 full_text += chunk.delta
@@ -1234,20 +1299,47 @@ class Gateway:
                     reasoning_text += chunk.reasoning_content
                 if chunk.delta:
                     self._logger.debug("Chat stream chunk", delta=chunk.delta)
-                    await self._broadcast(
-                        {
-                            "type": "event",
-                            "method": "chat.stream.chunk",
-                            "payload": {
-                                "session_id": session.id,
-                                "message_id": msg_id,
-                                "delta": chunk.delta,
-                            },
-                        }
-                    )
+                    if guard is not None:
+                        for ev in guard.feed(chunk.delta):
+                            await self._broadcast(
+                                {
+                                    "type": "event",
+                                    "method": ev.method,
+                                    "payload": {
+                                        "session_id": session.id,
+                                        "message_id": msg_id,
+                                        **ev.payload,
+                                    },
+                                }
+                            )
+                    else:
+                        await self._broadcast(
+                            {
+                                "type": "event",
+                                "method": "chat.stream.chunk",
+                                "payload": {
+                                    "session_id": session.id,
+                                    "message_id": msg_id,
+                                    "delta": chunk.delta,
+                                },
+                            }
+                        )
                 if getattr(chunk, "tool_calls", None):
                     raw_tool_calls = chunk.tool_calls
                     self._logger.debug("Native tool_calls", raw_tool_calls=raw_tool_calls)
+            if guard is not None:
+                for ev in guard.flush():
+                    await self._broadcast(
+                        {
+                            "type": "event",
+                            "method": ev.method,
+                            "payload": {
+                                "session_id": session.id,
+                                "message_id": msg_id,
+                                **ev.payload,
+                            },
+                        }
+                    )
         except Exception as exc:
             self._logger.error(
                 "AI chat failed",

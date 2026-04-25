@@ -44,6 +44,11 @@ class GatewayConfig(BaseSettings):
     proactive_interval_max: int = Field(default=180)
     proactive_tts: bool = Field(default=True)
 
+    tool_calling_strategy: Literal["legacy", "phase1_decision"] = Field(default="legacy")
+    phase1_max_tokens: int = Field(default=128)
+    phase1_max_candidate_tools: int = Field(default=5)
+    enable_streaming_guard: bool = Field(default=True)
+
     @classmethod
     def settings_customise_sources(
         cls,
