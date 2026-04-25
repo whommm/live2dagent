@@ -113,9 +113,7 @@ class SessionManager:
         repo = await self._ensure_repo(session.id)
         await repo.save_session(session)
 
-    async def compact_session(
-        self, session_id: str, summary: str
-    ) -> Session | None:
+    async def compact_session(self, session_id: str, summary: str) -> Session | None:
         """Replace early messages with a memory summary.
 
         The summary is stored in the session's memory_summary field and

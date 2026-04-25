@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -23,8 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from aipet.frontend.client import GatewayClient, fire_and_forget
 from aipet.frontend.chat_trigger import ChatTriggerButton
+from aipet.frontend.client import GatewayClient, fire_and_forget
 from aipet.frontend.live2d_widget import Live2DWidget
 from aipet.frontend.live_canvas import LiveCanvasWidget
 from aipet.frontend.theme import MaterialTheme
@@ -56,16 +55,16 @@ class SpeechBubble(QWidget):
         self.label = QLabel(self)
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        bubble_bg = MaterialTheme.rgba(MaterialTheme.primary, 235)
-        bubble_border = MaterialTheme.rgba(MaterialTheme.on_primary, 160)
+        bubble_bg = MaterialTheme.rgba(MaterialTheme.surface_container, 246)
+        bubble_border = MaterialTheme.rgba(MaterialTheme.primary, 80)
         self.label.setStyleSheet(
             f"""
             QLabel {{
                 background-color: {bubble_bg};
-                color: {MaterialTheme.on_primary};
-                border-radius: 16px;
-                border: 2px solid {bubble_border};
-                padding: 10px 14px;
+                color: {MaterialTheme.on_surface};
+                border-radius: 14px;
+                border: 1px solid {bubble_border};
+                padding: 10px 13px;
                 font-size: 14px;
                 qproperty-alignment: AlignLeft AlignVCenter;
             }}
@@ -82,7 +81,7 @@ class SpeechBubble(QWidget):
                 background-color: transparent;
                 border-left: 8px solid transparent;
                 border-right: 8px solid transparent;
-                border-top: 12px solid {MaterialTheme.rgba(MaterialTheme.primary, 235)};
+                border-top: 12px solid {bubble_bg};
             }}
             """
         )
@@ -206,6 +205,8 @@ class PetWindow(QWidget):
         self._canvas_positions: dict[str, tuple[int, int]] = {}
         self.chat_window: ChatWindow | None = None
         self._provider_dialog: ProviderDialog | None = None
+        self._enable_tts_action: QAction | None = None
+        self._dnd_action: QAction | None = None
         self._lipsync_timer: QTimer | None = None
         self._lipsync_data: list[Any] = []
         self._lipsync_start_time: float = 0.0
@@ -247,8 +248,11 @@ class PetWindow(QWidget):
         overlay_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         overlay_layout.setSpacing(12)
 
-        self._quit_spinner = QLabel("⏳")
-        self._quit_spinner.setStyleSheet("font-size: 36px; border: none; background: transparent;")
+        self._quit_spinner = QLabel("保存中")
+        self._quit_spinner.setStyleSheet(
+            f"color: {MaterialTheme.inverse_on_surface}; font-size: 20px; font-weight: 700; "
+            "border: none; background: transparent;"
+        )
         self._quit_spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         overlay_layout.addWidget(self._quit_spinner)
 
@@ -259,7 +263,7 @@ class PetWindow(QWidget):
         self._quit_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         overlay_layout.addWidget(self._quit_title)
 
-        self._quit_hint = QLabel("稍等片刻，就好啊 (づ´・ω・)づ")
+        self._quit_hint = QLabel("稍等片刻，记忆同步完成后会自动退出")
         self._quit_hint.setStyleSheet(
             f"color: {MaterialTheme.rgba(MaterialTheme.inverse_on_surface, 200)}; font-size: 12px; border: none; background: transparent;"
         )
@@ -287,28 +291,44 @@ class PetWindow(QWidget):
         """Create system tray icon and menu."""
         self.tray_menu = QMenu(self)
 
-        show_chat_action = QAction("Open Chat", self)
+        show_chat_action = QAction("打开聊天", self)
         show_chat_action.triggered.connect(self._show_chat)
         self.tray_menu.addAction(show_chat_action)
 
-        manage_action = QAction("Manage Providers", self)
+        manage_action = QAction("模型与服务商设置", self)
         manage_action.triggered.connect(self._show_provider_dialog)
         self.tray_menu.addAction(manage_action)
 
         self.tray_menu.addSeparator()
 
+        self._enable_tts_action = QAction("开启语音朗读", self)
+        self._enable_tts_action.setCheckable(True)
+        self._enable_tts_action.triggered.connect(self._toggle_tts_enable)
+        self.tray_menu.addAction(self._enable_tts_action)
+
+        self._dnd_action = QAction("勿扰模式", self)
+        self._dnd_action.setCheckable(True)
+        self._dnd_action.triggered.connect(self._toggle_do_not_disturb)
+        self.tray_menu.addAction(self._dnd_action)
+
+        stop_tts_action = QAction("停止朗读", self)
+        stop_tts_action.triggered.connect(self._stop_tts)
+        self.tray_menu.addAction(stop_tts_action)
+
+        self.tray_menu.addSeparator()
+
         # Model switcher submenu
-        self._model_menu = QMenu("Switch Model", self)
+        self._model_menu = QMenu("切换模型", self)
         self._refresh_model_menu()
         self.tray_menu.addMenu(self._model_menu)
 
         self.tray_menu.addSeparator()
 
-        show_hide_action = QAction("Show/Hide Pet", self)
+        show_hide_action = QAction("显示/隐藏桌宠", self)
         show_hide_action.triggered.connect(self._toggle_visibility)
         self.tray_menu.addAction(show_hide_action)
 
-        quit_action = QAction("Quit", self)
+        quit_action = QAction("退出 AIPet", self)
         quit_action.triggered.connect(self._quit)
         self.tray_menu.addAction(quit_action)
 
@@ -323,7 +343,9 @@ class PetWindow(QWidget):
         """Rebuild the model switcher submenu from scanned models."""
         self._model_menu.clear()
         models = self.live2d_widget.scan_models()
-        current_path = Path(self.live2d_widget.model_path).resolve() if self.live2d_widget.model_path else None
+        current_path = (
+            Path(self.live2d_widget.model_path).resolve() if self.live2d_widget.model_path else None
+        )
         for name, path in models:
             action = QAction(name, self)
             action.setCheckable(True)
@@ -332,7 +354,7 @@ class PetWindow(QWidget):
             action.triggered.connect(lambda checked=False, p=path: self._switch_model(p))
             self._model_menu.addAction(action)
         if not models:
-            action = QAction("No models found", self)
+            action = QAction("未找到可用模型", self)
             action.setEnabled(False)
             self._model_menu.addAction(action)
 
@@ -346,11 +368,13 @@ class PetWindow(QWidget):
     async def _notify_live2d_model(self, model_name: str) -> None:
         """Notify Gateway of the current Live2D model for tag injection."""
         try:
-            await self.client.send({
-                "type": "request",
-                "method": "live2d.set_model",
-                "payload": {"model_name": model_name},
-            })
+            await self.client.send(
+                {
+                    "type": "request",
+                    "method": "live2d.set_model",
+                    "payload": {"model_name": model_name},
+                }
+            )
         except Exception as exc:
             self._logger.warning("Failed to notify model change: %s", exc)
 
@@ -363,6 +387,8 @@ class PetWindow(QWidget):
         self.client.on("tts.start", self._on_tts_start)
         self.client.on("tts.end", self._on_tts_end)
         self.client.on("chat.proactive", self._on_proactive)
+        self.client.on("system.error", self._on_system_error)
+        self.client.on("system.settings.updated", self._on_settings_updated)
         self.client.on("canvas.show", self._on_canvas_show)
         self.client.on("canvas.close", self._on_canvas_close)
         self.client.on("canvas.update", self._on_canvas_update)
@@ -377,6 +403,8 @@ class PetWindow(QWidget):
         self.client.off("tts.start", self._on_tts_start)
         self.client.off("tts.end", self._on_tts_end)
         self.client.off("chat.proactive", self._on_proactive)
+        self.client.off("system.error", self._on_system_error)
+        self.client.off("system.settings.updated", self._on_settings_updated)
         self.client.off("canvas.show", self._on_canvas_show)
         self.client.off("canvas.close", self._on_canvas_close)
         self.client.off("canvas.update", self._on_canvas_update)
@@ -414,11 +442,13 @@ class PetWindow(QWidget):
             return
         state = self.live2d_widget.get_state_snapshot()
         fire_and_forget(
-            self.client.send({
-                "type": "request",
-                "method": "live2d.state_report",
-                "payload": state,
-            })
+            self.client.send(
+                {
+                    "type": "request",
+                    "method": "live2d.state_report",
+                    "payload": state,
+                }
+            )
         )
 
     def _on_tts_start(self, payload: dict[str, Any]) -> None:
@@ -432,13 +462,100 @@ class PetWindow(QWidget):
         self._stop_lipsync_animation()
         self.live2d_widget.stop_lipsync()
 
+    def _stop_tts(self) -> None:
+        """Send a request to Gateway to stop current TTS playback."""
+        fire_and_forget(
+            self.client.send(
+                {
+                    "type": "request",
+                    "method": "tts.stop",
+                    "payload": {},
+                }
+            )
+        )
+
+    def _on_system_error(self, payload: dict[str, Any]) -> None:
+        message = payload.get("message", "Unknown error")
+        self.show_status_message(f"连接或配置异常：{message}", is_error=True)
+
+    def _on_settings_updated(self, payload: dict[str, Any]) -> None:
+        self._apply_runtime_settings(payload)
+
+    def _apply_runtime_settings(self, settings: dict[str, Any]) -> None:
+        if self._enable_tts_action is not None and "tts_auto_play" in settings:
+            self._enable_tts_action.blockSignals(True)
+            self._enable_tts_action.setChecked(bool(settings["tts_auto_play"]))
+            self._enable_tts_action.blockSignals(False)
+        if self._dnd_action is not None and "proactive_enabled" in settings:
+            self._dnd_action.blockSignals(True)
+            self._dnd_action.setChecked(not bool(settings["proactive_enabled"]))
+            self._dnd_action.blockSignals(False)
+
+    def refresh_runtime_settings(self) -> None:
+        fire_and_forget(self._refresh_runtime_settings())
+
+    async def _refresh_runtime_settings(self) -> None:
+        try:
+            settings = await self.client.request("system.get_settings")
+            self._apply_runtime_settings(settings)
+        except Exception as exc:
+            self._logger.debug("Failed to load runtime settings: %s", exc)
+
+    def _toggle_tts_enable(self) -> None:
+        if self._enable_tts_action is None:
+            return
+        tts_auto_play = self._enable_tts_action.isChecked()
+        fire_and_forget(self._update_runtime_settings({"tts_auto_play": tts_auto_play}))
+
+    def _toggle_do_not_disturb(self) -> None:
+        if self._dnd_action is None:
+            return
+        proactive_enabled = not self._dnd_action.isChecked()
+        payload = {"proactive_enabled": proactive_enabled}
+        if not proactive_enabled:
+            payload["proactive_tts"] = False
+        fire_and_forget(self._update_runtime_settings(payload))
+
+    async def _update_runtime_settings(self, payload: dict[str, Any]) -> None:
+        try:
+            settings = await self.client.request("system.update_settings", payload)
+            self._apply_runtime_settings(settings)
+            if "tts_auto_play" in payload:
+                self.show_status_message("语音已开启" if payload["tts_auto_play"] else "语音已静音")
+            if "proactive_enabled" in payload:
+                self.show_status_message(
+                    "勿扰模式已关闭" if payload["proactive_enabled"] else "勿扰模式已开启"
+                )
+        except Exception as exc:
+            self.show_status_message(f"设置更新失败：{exc}", is_error=True)
+
+    def show_status_message(self, text: str, is_error: bool = False) -> None:
+        """Show a short, visible status bubble near the pet."""
+        canvas_id = "pet_status_error" if is_error else "pet_status_info"
+        self._show_canvas(
+            {
+                "canvas_id": canvas_id,
+                "canvas_type": "bubble",
+                "data": {"text": text, "icon": "!" if is_error else "i"},
+                "position": "head",
+                "duration_ms": 9000 if is_error else 5000,
+                "click_action": "open_chat",
+                "width": 300,
+            }
+        )
+        if is_error and hasattr(self, "tray_icon") and self.tray_icon.isVisible():
+            self.tray_icon.showMessage("AIPet", text, QSystemTrayIcon.MessageIcon.Warning, 6000)
+
     def _start_lipsync_animation(self, lipsync_data: list[Any]) -> None:
         """Drive lip-sync using a pre-computed volume envelope."""
         self._stop_lipsync_animation()
         self._lipsync_data = lipsync_data
-        self._lipsync_start_time = QTimer.currentTime().msec() if hasattr(QTimer, "currentTime") else 0
+        self._lipsync_start_time = (
+            QTimer.currentTime().msec() if hasattr(QTimer, "currentTime") else 0
+        )
         # Fallback: use system time if QTimer.currentTime is not available
         import time
+
         self._lipsync_start_time = time.time() * 1000
 
         self._lipsync_timer = QTimer(self)
@@ -483,14 +600,18 @@ class PetWindow(QWidget):
         if hasattr(self, "_lipsync_data"):
             self._lipsync_data = []
 
-
     def _on_proactive(self, payload: dict[str, Any]) -> None:
         """Handle proactive message by showing a canvas bubble."""
         content = payload.get("content", "")
         expression = payload.get("expression")
         motion = payload.get("motion")
         msg_id = payload.get("message_id", "")
-        self._logger.debug("Received chat.proactive: content=%r, expression=%s, motion=%s", content[:30], expression, motion)
+        self._logger.debug(
+            "Received chat.proactive: content=%r, expression=%s, motion=%s",
+            content[:30],
+            expression,
+            motion,
+        )
 
         if expression:
             self._logger.debug("Setting expression: %s", expression)
@@ -501,15 +622,17 @@ class PetWindow(QWidget):
 
         # Show as a canvas bubble
         canvas_id = msg_id or f"proactive_{uuid.uuid4().hex[:8]}"
-        self._show_canvas({
-            "canvas_id": canvas_id,
-            "canvas_type": "bubble",
-            "data": {"text": content},
-            "position": "head",
-            "duration_ms": 6000,
-            "click_action": "open_chat",
-            "width": 280,
-        })
+        self._show_canvas(
+            {
+                "canvas_id": canvas_id,
+                "canvas_type": "bubble",
+                "data": {"text": content},
+                "position": "head",
+                "duration_ms": 6000,
+                "click_action": "open_chat",
+                "width": 280,
+            }
+        )
 
     def _on_canvas_show(self, payload: dict[str, Any]) -> None:
         self._show_canvas(payload)
@@ -525,7 +648,9 @@ class PetWindow(QWidget):
             widget.update_data(payload.get("data", {}))
             # Recalculate position after content changes
             position = payload.get("position", "head")
-            x, y = self._calculate_canvas_position(widget, position, payload.get("x"), payload.get("y"))
+            x, y = self._calculate_canvas_position(
+                widget, position, payload.get("x"), payload.get("y")
+            )
             widget.move(x, y)
             self._canvas_positions[canvas_id] = (x, y)
 
@@ -583,7 +708,9 @@ class PetWindow(QWidget):
 
         self._canvases[canvas_id] = widget
         self._canvas_positions[canvas_id] = (x, y)
-        self._logger.debug("Canvas shown: id=%s, type=%s, pos=(%d,%d)", canvas_id, canvas_type, x, y)
+        self._logger.debug(
+            "Canvas shown: id=%s, type=%s, pos=(%d,%d)", canvas_id, canvas_type, x, y
+        )
 
     def _calculate_canvas_position(
         self, widget: LiveCanvasWidget, position: str, custom_x: int | None, custom_y: int | None
@@ -724,6 +851,8 @@ class PetWindow(QWidget):
             except RuntimeError:
                 self._provider_dialog = None
 
+        from aipet.frontend.provider_dialog import ProviderDialog
+
         dialog = ProviderDialog(self.client, self)
         self._provider_dialog = dialog
         dialog.finished.connect(lambda: setattr(self, "_provider_dialog", None))
@@ -771,10 +900,8 @@ class PetWindow(QWidget):
             self._chat_trigger.close()
         # Actually close chat window on app quit
         if self.chat_window is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self.chat_window.force_close()
-            except Exception:
-                pass
             self.chat_window = None
         with contextlib.suppress(Exception):
             fire_and_forget(self.client.disconnect())
@@ -799,7 +926,9 @@ class PetWindow(QWidget):
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOZORDER = 0x0004
-            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            )
         except Exception:
             pass
 
@@ -851,7 +980,12 @@ class PetWindow(QWidget):
         SWP_NOZORDER = 0x0004
         SWP_SHOWWINDOW = 0x0040
         user32.SetWindowPos(
-            hwnd, 0, 0, 0, 0, 0,
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
         )
 
@@ -880,11 +1014,15 @@ class PetWindow(QWidget):
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "x": self.x(),
-                    "y": self.y(),
-                    "scale": self.live2d_widget.current_scale,
-                }, f, indent=2)
+                json.dump(
+                    {
+                        "x": self.x(),
+                        "y": self.y(),
+                        "scale": self.live2d_widget.current_scale,
+                    },
+                    f,
+                    indent=2,
+                )
         except Exception:
             pass
 
@@ -907,9 +1045,9 @@ class PetWindow(QWidget):
 
         s = self.live2d_widget.current_scale
         viewport = min(self.width(), self.height())
-        visible_margin = max(80, int(viewport * s * 0.15))   # pixels to keep visible
-        snap_trigger = max(40, int(viewport * s * 0.08))      # distance that triggers snap
-        max_offscreen = visible_margin + 100                  # hard limit before we pull back
+        visible_margin = max(80, int(viewport * s * 0.15))  # pixels to keep visible
+        snap_trigger = max(40, int(viewport * s * 0.08))  # distance that triggers snap
+        max_offscreen = visible_margin + 100  # hard limit before we pull back
 
         new_x, new_y = self.x(), self.y()
         snapped = False

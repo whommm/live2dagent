@@ -37,6 +37,8 @@ gui = [
     "PySide6>=6.6",
     "qasync>=0.27",
     "live2d-py>=0.5.3",
+    "markdown-it-py>=3.0",
+    "pygments>=2.17",
 ]
 ai = [
     "google-genai>=1.0",

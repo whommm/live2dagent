@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import random
 import time
@@ -31,6 +32,10 @@ from aipet.gateway.skills.router import ToolRouter
 from aipet.gateway.state import AppState, ClientInfo, ProviderStatus, StateStore
 from aipet.utils.paths import ensure_directories, get_config_dir, get_project_root
 
+_current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "aipet_current_request_id", default=None
+)
+
 
 class Gateway:
     """AIPet Gateway WebSocket server."""
@@ -43,7 +48,6 @@ class Gateway:
         self.sessions = SessionManager(bus=self.bus)
         self.provider_manager = ProviderManager()
         self.clients: dict[str, ServerConnection] = {}
-        self._pending_req_id: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._live2d_tags = self._scan_live2d_tags()
         self._last_user_activity = time.time()
@@ -76,6 +80,15 @@ class Gateway:
                         "type": "event",
                         "method": "tts.end",
                         "payload": {"session_id": "main"},
+                    }
+                )
+            ),
+            on_error=lambda msg: asyncio.create_task(
+                self._broadcast(
+                    {
+                        "type": "event",
+                        "method": "system.error",
+                        "payload": {"code": "TTS_PLAYBACK_ERROR", "message": msg},
                     }
                 )
             ),
@@ -126,7 +139,9 @@ class Gateway:
         model = config.ai_model
         self._logger.info(
             "Syncing config to ProviderManager",
-            provider=provider, model=model, has_key=has_key,
+            provider=provider,
+            model=model,
+            has_key=has_key,
         )
         if config.ai_provider == "echo" or not config.ai_api_key:
             self._logger.info("Skipping sync: provider is echo or no api_key")
@@ -166,7 +181,9 @@ class Gateway:
             self.provider_manager.save()
             self._logger.info("Updated current model", model=config.ai_model)
         else:
-            self._logger.info("Provider already current", target_id=target_id, model=config.ai_model)
+            self._logger.info(
+                "Provider already current", target_id=target_id, model=config.ai_model
+            )
 
     def _read_soul(self) -> str:
         """Read the soul.md system prompt."""
@@ -270,6 +287,7 @@ class Gateway:
         Returns (cleaned_text, tags).
         """
         import re
+
         tag_re = re.compile(r"\[\s*(expression|motion|pose|emotion|prop)\s*:\s*([^\[\]]+?)\s*\]")
         tags: list[dict[str, str]] = []
         for match in tag_re.finditer(text):
@@ -335,25 +353,25 @@ class Gateway:
         import re
 
         # 1. Remove parenthetical action descriptions
-        text = re.sub(r"（[^（）]*）", "", text)              # 全角括号
-        text = re.sub(r"\([^()]*\)", "", text)               # 半角括号
-        text = re.sub(r"【[^【】]*】", "", text)              # 方头括号
-        text = re.sub(r"「[^「」]*」", "", text)              # 日式引号
-        text = re.sub(r"『[^『』]*』", "", text)              # 日式双引号
-        text = re.sub(r"〈[^〈〉]*〉", "", text)              # 尖括号
-        text = re.sub(r"《[^《》]*》", "", text)              # 书名号
+        text = re.sub(r"（[^（）]*）", "", text)  # 全角括号
+        text = re.sub(r"\([^()]*\)", "", text)  # 半角括号
+        text = re.sub(r"【[^【】]*】", "", text)  # 方头括号
+        text = re.sub(r"「[^「」]*」", "", text)  # 日式引号
+        text = re.sub(r"『[^『』]*』", "", text)  # 日式双引号
+        text = re.sub(r"〈[^〈〉]*〉", "", text)  # 尖括号
+        text = re.sub(r"《[^《》]*》", "", text)  # 书名号
 
         # 2. Remove asterisk-wrapped actions (AI common format)
         text = re.sub(r"\*[^*\n]{1,30}\*", "", text)
 
         # 3. Markdown → plain text
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)       # **bold**
-        text = re.sub(r"\*(.+?)\*", r"\1", text)           # *italic*
-        text = re.sub(r"`{1,3}[\s\S]*?`{1,3}", "", text)   # `code` / ```block```
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # **bold**
+        text = re.sub(r"\*(.+?)\*", r"\1", text)  # *italic*
+        text = re.sub(r"`{1,3}[\s\S]*?`{1,3}", "", text)  # `code` / ```block```
         text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # [link](url)
         text = re.sub(r"^#{1,6}\s", "", text, flags=re.MULTILINE)  # headings
-        text = re.sub(r"^[-*+]\s", "", text, flags=re.MULTILINE)   # list items
-        text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)      # quotes
+        text = re.sub(r"^[-*+]\s", "", text, flags=re.MULTILINE)  # list items
+        text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)  # quotes
         text = text.replace("_", "").replace("~", "").replace("|", "")
 
         # 4. Emoji + kaomoji + decorative symbols → comma separator
@@ -397,8 +415,18 @@ class Gateway:
         try:
             audio_path = await self.tts_provider.synthesize(cleaned_text)
             await self.audio_player.enqueue(audio_path, cleaned_text)
-        except Exception:
+        except Exception as exc:
             self._logger.exception("TTS error")
+            await self._broadcast(
+                {
+                    "type": "event",
+                    "method": "system.error",
+                    "payload": {
+                        "code": "TTS_SYNTHESIS_ERROR",
+                        "message": f"语音合成失败: {exc}",
+                    },
+                }
+            )
 
     async def _maybe_compact_session(self, session_id: str) -> None:
         """Compress early messages into a memory summary when context grows too long."""
@@ -477,8 +505,9 @@ class Gateway:
             if briefs:
                 tool_desc = (
                     "You have access to the following tools. "
-                    "When you decide to use a tool, first call system:get_tool_schema to get its full parameter definition, "
-                    "then call the actual tool with the correct arguments.\n\n"
+                    "When you decide to use a tool, first call system:get_tool_schema "
+                    "to get its full parameter definition, then call the actual tool "
+                    "with the correct arguments.\n\n"
                 )
                 for b in briefs:
                     tool_desc += f"- {b['name']} — {b['brief']}\n"
@@ -486,41 +515,52 @@ class Gateway:
                 tool_desc += (
                     "Meta-tool (always available):\n"
                     "Tool: system:get_tool_schema\n"
-                    "Description: 获取指定工具的完整参数定义。当你决定调用某个工具但不知道具体参数格式时，先调用此工具获取参数详情。\n"
+                    "Description: 获取指定工具的完整参数定义。"
+                    "当你决定调用某个工具但不知道具体参数格式时，"
+                    "先调用此工具获取参数详情。\n"
                     "Parameters:\n"
-                    '  - tool_name: string (required) — 工具全名，格式为 skill_id:tool_name，如 weather:get_weather\n'
+                    "  - tool_name: string (required) — 工具全名，格式为 "
+                    "skill_id:tool_name，如 weather:get_weather\n"
                     "\n"
                     "--- TOOL CALLING RULES (STRICT) ---\n"
-                    "When you need to use one or more tools, you MUST output EXACTLY ONE raw JSON object.\n"
-                    "NO chitchat, NO greetings, NO explanations, NO thinking out loud, NO markdown.\n"
+                    "When you need to use one or more tools, you MUST output "
+                    "EXACTLY ONE raw JSON object.\n"
+                    "NO chitchat, NO greetings, NO explanations, "
+                    "NO thinking out loud, NO markdown.\n"
                     "NOT a single character before or after the JSON.\n\n"
-                    'Required format: {"tool_calls": [{"name": "skill_id:tool_name", "arguments": {"param": "value"}}]}\n\n'
+                    'Required format: {"tool_calls": [{"name": "skill_id:tool_name", '
+                    '"arguments": {"param": "value"}}]}\n\n'
                     "WRONG: '让我查一下～' followed by JSON\n"
                     "WRONG: JSON wrapped in ```code blocks```\n"
                     "WRONG: XML / DSML tags like <｜DSML｜tool_calls>\n"
                     "RIGHT:  Only the raw JSON object itself, nothing else.\n\n"
                     "Example flow:\n"
                     '  User: "北京天气怎么样？"\n'
-                    '  Assistant: {"tool_calls": [{"name": "system:get_tool_schema", "arguments": {"tool_name": "weather:get_weather"}}]}\n'
-                    '  (schema returned)\n'
-                    '  Assistant: {"tool_calls": [{"name": "weather:get_weather", "arguments": {"city": "北京"}}]}\n\n'
-                    "If no tool is needed, respond normally in plain text. Do NOT output JSON if no tool is needed."
+                    '  Assistant: {"tool_calls": [{"name": "system:get_tool_schema", '
+                    '"arguments": {"tool_name": "weather:get_weather"}}]}\n'
+                    "  (schema returned)\n"
+                    '  Assistant: {"tool_calls": [{"name": "weather:get_weather", '
+                    '"arguments": {"city": "北京"}}]}\n\n'
+                    "If no tool is needed, respond normally in plain text. "
+                    "Do NOT output JSON if no tool is needed."
                 )
                 # Inject skill authoring guide when skill_writer is available
                 if "skill_writer" in self.skills._skills:
                     tool_desc += (
                         "\n\n# Skill Authoring Guide\n"
-                        "If the user asks you to create a new skill / tool / plugin, follow this exact workflow:\n"
+                        "If the user asks you to create a new skill / tool / plugin, "
+                        "follow this exact workflow:\n"
                         "1. Call skill_writer:create_skill to write the draft code.\n"
                         "2. Call skill_tester:test_skill to validate it.\n"
-                        "3. If tests fail, analyze errors and call skill_writer:update_skill to fix, then test again.\n"
+                        "3. If tests fail, analyze errors and call "
+                        "skill_writer:update_skill to fix, then test again.\n"
                         "4. Repeat steps 2-3 until skill_tester:test_skill returns passed=true.\n"
                         "5. Only then call skill_writer:install_skill to activate the skill.\n\n"
                         "Code constraints for new skills:\n"
                         "- Allowed libraries: Python stdlib + httpx + pydantic only.\n"
                         "- Forbidden: os, subprocess, sys, eval, exec, compile, __import__.\n"
                         "- Every tool function must have type hints and a docstring.\n"
-                        "- __init__.py must expose `tools = {\"name\": function, ...}`."
+                        '- __init__.py must expose `tools = {"name": function, ...}`.'
                     )
                 system_parts.append(f"# Tools\n{tool_desc}")
 
@@ -666,8 +706,13 @@ class Gateway:
         if "<｜DSML｜invoke" not in text:
             return None
 
-        invoke_pat = re.compile(r'<｜DSML｜invoke\s+name="([^"]+)">(.*?)</｜DSML｜invoke>', re.DOTALL)
-        param_pat = re.compile(r'<｜DSML｜parameter\s+name="([^"]+)"(?:\s+\w+="[^"]*")*>([^<]*)</｜DSML｜parameter>', re.DOTALL)
+        invoke_pat = re.compile(
+            r'<｜DSML｜invoke\s+name="([^"]+)">(.*?)</｜DSML｜invoke>', re.DOTALL
+        )
+        param_pat = re.compile(
+            r'<｜DSML｜parameter\s+name="([^"]+)"(?:\s+\w+="[^"]*")*>([^<]*)</｜DSML｜parameter>',
+            re.DOTALL,
+        )
 
         calls: list[dict[str, Any]] = []
         for inv in invoke_pat.finditer(text):
@@ -749,7 +794,12 @@ class Gateway:
             # Serialize tool_calls into content so the model can see its own
             # previous tool calls in the conversation history.
             tool_calls_json = json.dumps({"tool_calls": parsed}, ensure_ascii=False)
-            assistant_msg = Message(role="assistant", content=tool_calls_json, tool_calls=parsed, reasoning_content=reasoning_content)
+            assistant_msg = Message(
+                role="assistant",
+                content=tool_calls_json,
+                tool_calls=parsed,
+                reasoning_content=reasoning_content,
+            )
             await self.sessions.add_message(session_id, assistant_msg)
 
             for tc in parsed:
@@ -778,7 +828,13 @@ class Gateway:
                         result = await self._handle_canvas_tool(name, args)
                     else:
                         result = await self.tool_router.call(name, args)
-                    self._logger.debug("Tool result", name=name, result=result[:300] if isinstance(result, str) and len(result) > 300 else result)
+                    self._logger.debug(
+                        "Tool result",
+                        name=name,
+                        result=result[:300]
+                        if isinstance(result, str) and len(result) > 300
+                        else result,
+                    )
                     # Broadcast tool success
                     await self._broadcast(
                         {
@@ -828,9 +884,15 @@ class Gateway:
                     next_raw_tool_calls = chunk.tool_calls
 
             self._logger.info("AI round reply", loop_idx=loop_idx, reply=full_text[:300])
-            self._logger.info("Raw tool calls", loop_idx=loop_idx, raw_tool_calls=next_raw_tool_calls)
+            self._logger.info(
+                "Raw tool calls", loop_idx=loop_idx, raw_tool_calls=next_raw_tool_calls
+            )
 
-            parsed = next_raw_tool_calls if next_raw_tool_calls is not None else self._parse_tool_calls(full_text)
+            parsed = (
+                next_raw_tool_calls
+                if next_raw_tool_calls is not None
+                else self._parse_tool_calls(full_text)
+            )
             self._logger.info("Next parsed", loop_idx=loop_idx, parsed=parsed)
 
         self._logger.info("Tool resolve done", final_content=full_text[:300], loop_count=loop_idx)
@@ -840,7 +902,10 @@ class Gateway:
             self._logger.warning("Tool resolve returned empty content, using fallback")
             final_text = "（已执行工具，但未获得回复）"
         return Message(
-            id=message_id or str(uuid.uuid4()), role="assistant", content=final_text, reasoning_content=reasoning_text
+            id=message_id or str(uuid.uuid4()),
+            role="assistant",
+            content=final_text,
+            reasoning_content=reasoning_text,
         )
 
     def _get_tool_schema_json(self, tool_name: str) -> str:
@@ -921,7 +986,9 @@ class Gateway:
         client_id = str(uuid.uuid4())
         async with self._lock:
             self.clients[client_id] = websocket
-        self._logger.info("Client connected", client_id=client_id, remote_address=str(websocket.remote_address))
+        self._logger.info(
+            "Client connected", client_id=client_id, remote_address=str(websocket.remote_address)
+        )
 
         try:
             async for message in websocket:
@@ -931,7 +998,6 @@ class Gateway:
         finally:
             async with self._lock:
                 self.clients.pop(client_id, None)
-                self._pending_req_id.pop(client_id, None)
             await self.store.update(
                 lambda s: s.model_copy(
                     update={"clients": {k: v for k, v in s.clients.items() if k != client_id}}
@@ -948,9 +1014,7 @@ class Gateway:
             return
 
         req_id = data.get("id")
-        if req_id:
-            async with self._lock:
-                self._pending_req_id[client_id] = req_id
+        req_token = _current_request_id.set(req_id if isinstance(req_id, str) else None)
         method = data.get("method")
         payload = data.get("payload", {})
 
@@ -977,6 +1041,9 @@ class Gateway:
             "provider.remove": self._handle_provider_remove,
             "live2d.set_model": self._handle_live2d_set_model,
             "live2d.state_report": self._handle_live2d_state_report,
+            "tts.stop": self._handle_tts_stop,
+            "system.get_settings": self._handle_system_get_settings,
+            "system.update_settings": self._handle_system_update_settings,
             "system.shutdown": self._handle_shutdown,
         }
 
@@ -989,11 +1056,13 @@ class Gateway:
             await handler(client_id, payload)
         except Exception as exc:
             import traceback
-            self._logger.error("Handler failed", method=method, exc=str(exc), traceback=traceback.format_exc())
+
+            self._logger.error(
+                "Handler failed", method=method, exc=str(exc), traceback=traceback.format_exc()
+            )
             await self._send_error(client_id, f"Internal error: {exc}")
         finally:
-            async with self._lock:
-                self._pending_req_id.pop(client_id, None)
+            _current_request_id.reset(req_token)
 
     async def _handle_hello(self, client_id: str, payload: dict[str, Any]) -> None:
         """Handle client handshake."""
@@ -1074,8 +1143,9 @@ class Gateway:
                 f"Provider '{current_entry.name}' is missing API key. Falling back to Echo.",
             )
         # Force text-mode two-phase tool calling for all providers
-        use_native_tools = False
-        ai_messages = self._build_ai_messages(session.id, include_tools=True, include_live2d_tags=True)
+        ai_messages = self._build_ai_messages(
+            session.id, include_tools=True, include_live2d_tags=True
+        )
         tools = None
         full_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
@@ -1084,7 +1154,9 @@ class Gateway:
             if getattr(chunk, "tool_calls", None):
                 raw_tool_calls = chunk.tool_calls
 
-        assistant_msg = await self._resolve_tool_calls(session.id, full_text, raw_tool_calls=raw_tool_calls)
+        assistant_msg = await self._resolve_tool_calls(
+            session.id, full_text, raw_tool_calls=raw_tool_calls
+        )
         cleaned_text, live2d_tags = self._parse_live2d_tags(assistant_msg.content)
         if cleaned_text != assistant_msg.content:
             assistant_msg.content = cleaned_text
@@ -1148,8 +1220,9 @@ class Gateway:
             )
         # Force ALL providers to use text-mode two-phase tool calling.
         # This ensures every model follows: brief -> system:get_tool_schema -> actual tool.
-        use_native_tools = False
-        ai_messages = self._build_ai_messages(session.id, include_tools=True, include_live2d_tags=True)
+        ai_messages = self._build_ai_messages(
+            session.id, include_tools=True, include_live2d_tags=True
+        )
         tools = None
         full_text = ""
         reasoning_text = ""
@@ -1176,10 +1249,18 @@ class Gateway:
                     raw_tool_calls = chunk.tool_calls
                     self._logger.debug("Native tool_calls", raw_tool_calls=raw_tool_calls)
         except Exception as exc:
-            self._logger.error("AI chat failed", exc=str(exc), ai_messages=[{"role": m.role, "content": (m.content or "")[:100]} for m in ai_messages])
+            self._logger.error(
+                "AI chat failed",
+                exc=str(exc),
+                ai_messages=[
+                    {"role": m.role, "content": (m.content or "")[:100]} for m in ai_messages
+                ],
+            )
             raise
 
-        has_tool_calls = raw_tool_calls is not None or self._parse_tool_calls(full_text.strip()) is not None
+        has_tool_calls = (
+            raw_tool_calls is not None or self._parse_tool_calls(full_text.strip()) is not None
+        )
         await self._broadcast(
             {
                 "type": "event",
@@ -1193,7 +1274,13 @@ class Gateway:
             }
         )
 
-        final_msg = await self._resolve_tool_calls(session.id, full_text.strip(), message_id=msg_id, raw_tool_calls=raw_tool_calls, reasoning_content=reasoning_text)
+        final_msg = await self._resolve_tool_calls(
+            session.id,
+            full_text.strip(),
+            message_id=msg_id,
+            raw_tool_calls=raw_tool_calls,
+            reasoning_content=reasoning_text,
+        )
         cleaned_text, live2d_tags = self._parse_live2d_tags(final_msg.content)
         if cleaned_text != final_msg.content:
             final_msg.content = cleaned_text
@@ -1442,6 +1529,8 @@ class Gateway:
 
     async def _handle_provider_get_current(self, client_id: str, payload: dict[str, Any]) -> None:
         entry = self.provider_manager.get_provider()
+        requires_api_key = bool(entry and entry.type in {"openai", "gemini", "anthropic"})
+        is_configured = bool(entry and (not requires_api_key or entry.api_key))
         await self._send(
             client_id,
             {
@@ -1451,6 +1540,9 @@ class Gateway:
                     "provider": entry.model_dump(mode="json") if entry else None,
                     "current_provider_id": self.provider_manager.current_provider_id,
                     "current_model": self.provider_manager.current_model,
+                    "is_configured": is_configured,
+                    "requires_api_key": requires_api_key,
+                    "config_path": str(self.provider_manager._config_path()),
                 },
             },
         )
@@ -1533,11 +1625,73 @@ class Gateway:
             },
         )
 
+    async def _handle_system_get_settings(self, client_id: str, payload: dict[str, Any]) -> None:
+        """Return user-facing runtime toggles."""
+        await self._send(
+            client_id,
+            {
+                "type": "response",
+                "method": "system.get_settings",
+                "payload": self._runtime_settings_payload(),
+            },
+        )
+
+    async def _handle_system_update_settings(self, client_id: str, payload: dict[str, Any]) -> None:
+        """Update user-facing runtime toggles without restarting Gateway."""
+        if "tts_auto_play" in payload:
+            self.config.tts_auto_play = bool(payload["tts_auto_play"])
+        if "proactive_enabled" in payload:
+            self.config.proactive_enabled = bool(payload["proactive_enabled"])
+        if "proactive_tts" in payload:
+            self.config.proactive_tts = bool(payload["proactive_tts"])
+
+        settings = self._runtime_settings_payload()
+        await self._broadcast(
+            {
+                "type": "event",
+                "method": "system.settings.updated",
+                "payload": settings,
+            }
+        )
+        await self._send(
+            client_id,
+            {
+                "type": "response",
+                "method": "system.update_settings",
+                "payload": {"success": True, **settings},
+            },
+        )
+
+    def _runtime_settings_payload(self) -> dict[str, Any]:
+        return {
+            "tts_auto_play": self.config.tts_auto_play,
+            "proactive_enabled": self.config.proactive_enabled,
+            "proactive_tts": self.config.proactive_tts,
+        }
+
+    async def _handle_tts_stop(self, client_id: str, payload: dict[str, Any]) -> None:
+        """Stop current TTS playback and clear the queue."""
+        self.audio_player.skip_current()
+        self.audio_player.clear_queue()
+        await self._send(
+            client_id,
+            {
+                "type": "response",
+                "method": "tts.stop",
+                "payload": {"success": True},
+            },
+        )
+        await self._broadcast(
+            {
+                "type": "event",
+                "method": "tts.end",
+                "payload": {"session_id": "main", "reason": "stopped"},
+            }
+        )
+
     async def _handle_shutdown(self, client_id: str, payload: dict[str, Any]) -> None:
         """Graceful shutdown request."""
-        await self._broadcast(
-            {"type": "event", "method": "system.shutdown", "payload": {}}
-        )
+        await self._broadcast({"type": "event", "method": "system.shutdown", "payload": {}})
         await self.proactive.stop()
         await self.audio_player.stop()
         loop = asyncio.get_running_loop()
@@ -1552,7 +1706,7 @@ class Gateway:
         """Send a message to a specific client."""
         async with self._lock:
             client = self.clients.get(client_id)
-            req_id = self._pending_req_id.get(client_id)
+        req_id = _current_request_id.get()
         if client is None:
             return
         if req_id is not None and "id" not in data:
@@ -1635,7 +1789,9 @@ class ProactiveChatService:
 
     async def _loop(self) -> None:
         """Main loop: wait random interval, then trigger a proactive message."""
-        self._logger.info("ProactiveChat loop started", enabled=self.gateway.config.proactive_enabled)
+        self._logger.info(
+            "ProactiveChat loop started", enabled=self.gateway.config.proactive_enabled
+        )
         while not self._stopped.is_set():
             if not self.gateway.config.proactive_enabled:
                 if not getattr(self, "_disabled_logged", False):
@@ -1693,7 +1849,9 @@ class ProactiveChatService:
             self._logger.debug("Provider created", name=name, model_id=model_id)
             # Fallback: if ProviderManager yields Echo but gateway.toml has a real key, use it
             if isinstance(ai_provider, EchoProvider) and self.gateway.config.ai_api_key:
-                self._logger.debug("ProviderManager returned Echo, falling back to GatewayConfig provider")
+                self._logger.debug(
+                    "ProviderManager returned Echo, falling back to GatewayConfig provider"
+                )
                 ai_provider = create_ai_provider(self.gateway.config)
                 name = ai_provider.name
                 model_id = ai_provider.model_id
@@ -1733,7 +1891,9 @@ class ProactiveChatService:
             async for chunk in ai_provider.chat(messages):
                 full_text += chunk.delta
                 chunk_count += 1
-            self._logger.debug("AI returned chunks", chunk_count=chunk_count, text_length=len(full_text))
+            self._logger.debug(
+                "AI returned chunks", chunk_count=chunk_count, text_length=len(full_text)
+            )
 
             content = full_text.strip()
             self._logger.debug("Final content", content=content)
@@ -1787,7 +1947,6 @@ class ProactiveChatService:
             else:
                 self._logger.debug("TTS disabled, skipping")
         except Exception as exc:
-            import traceback
             self._logger.exception("ProactiveChat error")
             await self.gateway._broadcast(
                 {
@@ -1818,7 +1977,9 @@ def main() -> int:
             message = context.get("message", "Unknown asyncio error")
             exception = context.get("exception")
             if exception is not None:
-                logger.error("Asyncio exception: %s | exc=%s", message, exception, exc_info=exception)
+                logger.error(
+                    "Asyncio exception: %s | exc=%s", message, exception, exc_info=exception
+                )
             else:
                 logger.error("Asyncio error: %s | context=%s", message, context)
             _loop.default_exception_handler(context)

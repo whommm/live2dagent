@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
 import aiosqlite
 
-_logger = logging.getLogger("aipet.gateway.repository")
-
 from aipet.gateway.models import Message, Session
 from aipet.utils.paths import get_user_data_dir
+
+_logger = logging.getLogger("aipet.gateway.repository")
 
 
 class ChatRepository:
@@ -53,10 +54,8 @@ class ChatRepository:
                 )
             """)
             # Migrate existing databases that lack the source column
-            try:
+            with contextlib.suppress(aiosqlite.OperationalError):
                 await db.execute("ALTER TABLE messages ADD COLUMN source TEXT")
-            except aiosqlite.OperationalError:
-                pass  # Column already exists
             await db.commit()
 
     async def save_session(self, session: Session) -> None:
@@ -108,8 +107,10 @@ class ChatRepository:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO messages (id, session_id, role, content, tool_calls,
-                                      tool_call_id, attachments, model, tokens_used, created_at, source)
+                INSERT INTO messages (
+                    id, session_id, role, content, tool_calls, tool_call_id,
+                    attachments, model, tokens_used, created_at, source
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -168,7 +169,7 @@ class ChatRepository:
             if parent.exists() and not any(parent.iterdir()):
                 parent.rmdir()
             return True
-        except Exception as exc:
+        except Exception:
             _logger.exception("Failed to delete session DB")
             return False
 
@@ -182,7 +183,7 @@ class ChatRepository:
                 )
                 await db.commit()
             return True
-        except Exception as exc:
+        except Exception:
             _logger.exception("Failed to rename session")
             return False
 
@@ -196,7 +197,7 @@ class ChatRepository:
                 )
                 await db.commit()
             return True
-        except Exception as exc:
+        except Exception:
             _logger.exception("Failed to clear messages")
             return False
 

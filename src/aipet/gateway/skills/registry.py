@@ -190,15 +190,16 @@ class SkillRegistry:
                 key, val = stripped.split(":", 1)
                 key = key.strip()
                 val = val.strip()
-                if val.startswith('"') and val.endswith('"'):
-                    val = val[1:-1]
-                elif val.startswith("'") and val.endswith("'"):
+                if (
+                    val.startswith('"')
+                    and val.endswith('"')
+                    or val.startswith("'")
+                    and val.endswith("'")
+                ):
                     val = val[1:-1]
                 if val.startswith("[") and val.endswith("]"):
                     val = [
-                        v.strip().strip('"').strip("'")
-                        for v in val[1:-1].split(",")
-                        if v.strip()
+                        v.strip().strip('"').strip("'") for v in val[1:-1].split(",") if v.strip()
                     ]
                 meta[key] = val
                 current_key = key
@@ -209,9 +210,7 @@ class SkillRegistry:
         tools: list[Tool] = []
         for skill in self._skills.values():
             for tool_name, func in skill.tools.items():
-                schema = build_tool_schema(
-                    skill.skill_id, tool_name, func, skill.description
-                )
+                schema = build_tool_schema(skill.skill_id, tool_name, func, skill.description)
                 tools.append(Tool(function=schema))
         return tools
 
@@ -224,10 +223,12 @@ class SkillRegistry:
                 # Use the function's docstring first line as the tool brief
                 doc = func.__doc__ or ""
                 first_line = doc.strip().split("\n")[0].strip()
-                briefs.append({
-                    "name": full_name,
-                    "brief": first_line or skill.brief or f"Tool {tool_name}",
-                })
+                briefs.append(
+                    {
+                        "name": full_name,
+                        "brief": first_line or skill.brief or f"Tool {tool_name}",
+                    }
+                )
         return briefs
 
     def get_tool(self, full_name: str) -> tuple[Callable[..., Any], SkillInfo] | None:

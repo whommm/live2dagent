@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
@@ -32,8 +32,9 @@ def main() -> int:
         try:
             return _original_notify(obj, event)
         except Exception:
-            import logging
-            logging.getLogger("aipet.frontend.qt").exception("Unhandled Qt exception in notify(%r, %r)", obj, event)
+            logging.getLogger("aipet.frontend.qt").exception(
+                "Unhandled Qt exception in notify(%r, %r)", obj, event
+            )
             raise
 
     app.notify = _notify  # type: ignore[method-assign]
@@ -51,19 +52,42 @@ def main() -> int:
     async def _connect() -> None:
         try:
             await client.connect()
+            if not client.connected:
+                pet.setWindowTitle("AIPet - Connecting")
+                pet.show_status_message(
+                    "正在连接 Gateway，连接成功后会自动恢复。",
+                    is_error=True,
+                )
+                return
             # Notify Gateway of the currently loaded Live2D model
-            model_name = Path(pet.live2d_widget.model_path).parent.name
-            await client.send({
-                "type": "request",
-                "method": "live2d.set_model",
-                "payload": {"model_name": model_name},
-            })
+            model_path = pet.live2d_widget.model_path
+            model_name = Path(model_path).parent.name if model_path else ""
+            if model_name:
+                await client.send(
+                    {
+                        "type": "request",
+                        "method": "live2d.set_model",
+                        "payload": {"model_name": model_name},
+                    }
+                )
+            else:
+                logger = logging.getLogger("aipet.frontend.app")
+                logger.warning("No Live2D model loaded; skipping live2d.set_model")
+                pet.show_status_message(
+                    "未找到可加载的 Live2D 模型，\n"
+                    "请确认 live2dmodels/ 目录包含 .model3.json 或 .vtube.json 文件。",
+                    is_error=True,
+                )
+            pet.refresh_runtime_settings()
         except Exception as exc:
-            import logging
             logger = logging.getLogger("aipet.frontend.app")
             logger.error("Could not connect to Gateway at %s: %s", client.uri, exc)
-            # Show non-blocking error message via pet window title
+            # Show non-blocking error message via the pet bubble and window title.
             pet.setWindowTitle(f"AIPet — Connection Failed ({exc})")
+            pet.show_status_message(
+                f"无法连接 Gateway：{exc}\n请确认后台服务已启动，或稍后自动重连。",
+                is_error=True,
+            )
 
     with loop:
         loop.run_until_complete(_connect())
@@ -74,7 +98,6 @@ def main() -> int:
 
 def _qasync_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
     """Custom exception handler for qasync event loop."""
-    import logging
     logger = logging.getLogger("aipet.frontend.asyncio")
     message = context.get("message", "Unknown asyncio error")
     exception = context.get("exception")

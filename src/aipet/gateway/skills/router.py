@@ -21,9 +21,7 @@ class ToolRouter:
     def __init__(self, registry: SkillRegistry) -> None:
         self.registry = registry
 
-    async def call(
-        self, full_name: str, arguments: dict[str, Any], timeout: float = 30.0
-    ) -> str:
+    async def call(self, full_name: str, arguments: dict[str, Any], timeout: float = 30.0) -> str:
         """Execute a tool and return the result as a string."""
         result = self.registry.get_tool(full_name)
         if result is None:
@@ -44,7 +42,7 @@ class ToolRouter:
             if isinstance(output, (dict, list)):
                 return json.dumps(output, ensure_ascii=False)
             return str(output)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return f"Error: Tool '{full_name}' execution timed out after {timeout}s."
         except SandboxViolationError as exc:
             return str(exc)

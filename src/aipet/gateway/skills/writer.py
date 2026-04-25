@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import contextlib
 import importlib.util
 import inspect
-import json
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from aipet.utils.paths import get_user_data_dir
-
 
 # ---------------------------------------------------------------------------
 # Security policy
@@ -87,9 +84,8 @@ def lint_code(code: str) -> tuple[bool, list[str]]:
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
                 errors.append(f"Forbidden call: {node.func.id}")
-        elif isinstance(node, ast.Attribute):
-            if node.attr in FORBIDDEN_ATTRS:
-                errors.append(f"Forbidden attribute access: {node.attr}")
+        elif isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
+            errors.append(f"Forbidden attribute access: {node.attr}")
 
     return len(errors) == 0, errors
 
@@ -101,29 +97,28 @@ def lint_code(code: str) -> tuple[bool, list[str]]:
 
 def _mock_value_for_type(param_type: Any) -> Any:
     """Return a sensible mock value for a given Python type hint."""
+    import types
     import typing
 
-    origin = getattr(param_type, "__origin__", None)
+    origin = typing.get_origin(param_type)
+    type_args = typing.get_args(param_type)
 
-    # Optional[T] / Union[T, None]
-    if origin is typing.Union:
-        args = getattr(param_type, "__args__", ())
-        for arg in args:
+    # Optional[T] / Union[T, None] / T | None
+    if origin in (typing.Union, types.UnionType):
+        for arg in type_args:
             if arg is not type(None):
                 return _mock_value_for_type(arg)
         return None
 
     # list[T]
-    if origin is list or origin is typing.List:
-        args = getattr(param_type, "__args__", (str,))
-        inner = args[0] if args else str
+    if origin is list:
+        inner = type_args[0] if type_args else str
         return [_mock_value_for_type(inner)]
 
     # dict[K, V]
-    if origin is dict or origin is typing.Dict:
-        args = getattr(param_type, "__args__", (str, str))
-        k = args[0] if len(args) > 0 else str
-        v = args[1] if len(args) > 1 else str
+    if origin is dict:
+        k = type_args[0] if len(type_args) > 0 else str
+        v = type_args[1] if len(type_args) > 1 else str
         return {_mock_value_for_type(k): _mock_value_for_type(v)}
 
     # Basic types

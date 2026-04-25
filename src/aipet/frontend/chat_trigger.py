@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QEvent, Qt, QPropertyAnimation, QEasingCurve, QRect
-from PySide6.QtGui import QPainter, QColor, QFont, QMouseEvent, QPaintEvent
+from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, Qt
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from aipet.frontend.theme import MaterialTheme
@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 class ChatTriggerButton(QWidget):
     """A vertical strip docked to the right edge of the screen.
 
-    * Collapsed: a 6 px coloured strip (always visible).
-    * Expanded (hover): a 40 px pill with a chat icon.
+    * Collapsed: a quiet 6 px coloured strip (always visible).
+    * Expanded (hover): a 40 px pill with a compact chat label.
     * Click: toggles the ChatWindow via the linked PetWindow.
     """
 
@@ -147,18 +147,18 @@ class ChatTriggerButton(QWidget):
         h = self.height()
         radius = w / 2.0
 
-        # Background colour – use the primary colour at partial opacity
+        # Background colour: restrained enough to sit beside the desktop pet.
         bg = QColor(MaterialTheme.primary)
-        bg.setAlpha(180 if self._is_expanded else 140)
+        bg.setAlpha(210 if self._is_expanded else 150)
 
         painter.setBrush(bg)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(0, 0, w, h, radius, radius)
 
-        # Draw icon when expanded
+        # Draw label when expanded. Avoid emoji so Windows/Qt rendering stays consistent.
         if self._is_expanded and w > 20:
             painter.setPen(QColor(MaterialTheme.on_primary))
-            painter.setFont(QFont(MaterialTheme.font_family, 18))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "💬")
+            painter.setFont(QFont(MaterialTheme.font_family, 13, QFont.Weight.Bold))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "聊")
 
         painter.end()

@@ -336,7 +336,7 @@ class Live2DWidget(QOpenGLWidget):
         self._drag_threshold = 5  # pixels
 
         # ---- 参数动画系统 ----
-        self._current_params: dict[str, float] = {pid: 0.0 for pid in self._ALL_PARAMS}
+        self._current_params: dict[str, float] = dict.fromkeys(self._ALL_PARAMS, 0.0)
         self._param_targets: dict[str, float] = {}
         self._param_factors: dict[str, float] = {}
         self._idle_offsets: dict[str, float] = {}
@@ -364,7 +364,7 @@ class Live2DWidget(QOpenGLWidget):
         # ---- 鼠标视线追踪 ----
         self._mouse_gaze_x = 0.0
         self._mouse_gaze_y = 0.0
-        self._mouse_head_x = 0.0   # 头部跟随目标（角度）
+        self._mouse_head_x = 0.0  # 头部跟随目标（角度）
         self._mouse_head_y = 0.0
         self._mouse_track_timer = QTimer(self)
         self._mouse_track_timer.timeout.connect(self._update_mouse_gaze)
@@ -379,20 +379,63 @@ class Live2DWidget(QOpenGLWidget):
     def scan_models() -> list[tuple[str, str]]:
         """Scan project live2dmodels dir for available models.
 
+        Supports .model3.json (native), .vtube.json (VTube Studio config),
+        and .prprl2d.json (PrPrLive config).
+
         Returns list of (display_name, model3_json_path).
         """
+        import json
+
         project_models_dir = get_project_root() / "live2dmodels"
         candidates: list[tuple[str, str]] = []
-        if project_models_dir.exists():
-            for model_json in sorted(project_models_dir.rglob("*.model3.json")):
-                display_name = model_json.parent.name
-                candidates.append((display_name, str(model_json)))
+        if not project_models_dir.exists():
+            return candidates
+
+        # 1) Direct .model3.json files
+        for model_json in sorted(project_models_dir.rglob("*.model3.json")):
+            display_name = model_json.parent.name
+            candidates.append((display_name, str(model_json)))
+
+        # 2) .vtube.json — parse FileReferences.Model
+        for vtube_json in sorted(project_models_dir.rglob("*.vtube.json")):
+            display_name = vtube_json.parent.name
+            # Skip if we already found a .model3.json in this directory
+            if any(p == display_name for p, _ in candidates):
+                continue
+            try:
+                with open(vtube_json, encoding="utf-8") as f:
+                    data = json.load(f)
+                model_ref = data.get("FileReferences", {}).get("Model", "")
+                if model_ref:
+                    resolved = (vtube_json.parent / model_ref).resolve()
+                    if resolved.exists():
+                        candidates.append((display_name, str(resolved)))
+                    else:
+                        _logger.warning("VTube config references missing model: %s", resolved)
+            except Exception as exc:
+                _logger.debug("Failed to parse %s: %s", vtube_json, exc)
+
+        # 3) .prprl2d.json — no standard model reference; try to infer from
+        #    directory name by looking for a .model3.json with matching prefix.
+        for prpr_json in sorted(project_models_dir.rglob("*.prprl2d.json")):
+            display_name = prpr_json.parent.name
+            if any(p == display_name for p, _ in candidates):
+                continue
+            # Look for any .model3.json in the same directory
+            local_models = list(prpr_json.parent.glob("*.model3.json"))
+            if local_models:
+                candidates.append((display_name, str(local_models[0])))
+
         return candidates
 
     def _find_default_model(self) -> str:
         """Look for a default model in the project live2dmodels dir."""
         models = self.scan_models()
         if not models:
+            _logger.warning(
+                "No loadable Live2D models found in live2dmodels/. "
+                "Expected .model3.json or .vtube.json files."
+            )
             return ""
         # Prefer PurpleBird if available, otherwise first model
         for name, path in models:
@@ -467,7 +510,7 @@ class Live2DWidget(QOpenGLWidget):
 
     def _reset_params(self) -> None:
         """Reset all controlled params to defaults and clear targets."""
-        self._current_params = {pid: 0.0 for pid in self._ALL_PARAMS}
+        self._current_params = dict.fromkeys(self._ALL_PARAMS, 0.0)
         # 眼睛默认睁开
         self._current_params["ParamEyeLOpen"] = 1.0
         self._current_params["ParamEyeROpen"] = 1.0
@@ -547,7 +590,10 @@ class Live2DWidget(QOpenGLWidget):
 
         # --- 4. 视线追踪（鼠标跟随）---
         # 优先级：AI 指令 > 鼠标追踪 > 自主飘动
-        if "ParamEyeBallX" not in self._param_targets and "ParamEyeBallY" not in self._param_targets:
+        if (
+            "ParamEyeBallX" not in self._param_targets
+            and "ParamEyeBallY" not in self._param_targets
+        ):
             # 清除 auto target 中的眼神参数，避免打架
             for pid in ("ParamEyeBallX", "ParamEyeBallY"):
                 self._auto_targets.pop(pid, None)
@@ -556,15 +602,22 @@ class Live2DWidget(QOpenGLWidget):
             # 眼珠用较快但平滑的速度跟随鼠标
             current_x = self._current_params.get("ParamEyeBallX", 0.0)
             current_y = self._current_params.get("ParamEyeBallY", 0.0)
-            self._current_params["ParamEyeBallX"] = current_x + (self._mouse_gaze_x - current_x) * 0.15
-            self._current_params["ParamEyeBallY"] = current_y + (self._mouse_gaze_y - current_y) * 0.15
+            self._current_params["ParamEyeBallX"] = (
+                current_x + (self._mouse_gaze_x - current_x) * 0.15
+            )
+            self._current_params["ParamEyeBallY"] = (
+                current_y + (self._mouse_gaze_y - current_y) * 0.15
+            )
         else:
             # AI 控制眼神时，回退到自主飘动
             if now >= self._next_gaze_time:
                 self._gaze_target_x = random.uniform(-0.6, 0.6)
                 self._gaze_target_y = random.uniform(-0.4, 0.4)
                 self._next_gaze_time = now + random.uniform(1.5, 4.0)
-            for pid, target in [("ParamEyeBallX", self._gaze_target_x), ("ParamEyeBallY", self._gaze_target_y)]:
+            for pid, target in [
+                ("ParamEyeBallX", self._gaze_target_x),
+                ("ParamEyeBallY", self._gaze_target_y),
+            ]:
                 if pid not in self._param_targets and pid not in self._auto_targets:
                     current = self._current_params.get(pid, 0.0)
                     self._current_params[pid] = current + (target - current) * 0.06
@@ -584,10 +637,14 @@ class Live2DWidget(QOpenGLWidget):
             # 身体也跟着微微转，增强整体感
             if "ParamBodyAngleX" not in self._param_targets:
                 cur_bx = self._current_params.get("ParamBodyAngleX", 0.0)
-                self._current_params["ParamBodyAngleX"] = cur_bx + (self._mouse_head_x * 0.3 - cur_bx) * 0.04
+                self._current_params["ParamBodyAngleX"] = (
+                    cur_bx + (self._mouse_head_x * 0.3 - cur_bx) * 0.04
+                )
             if "ParamBodyAngleY" not in self._param_targets:
                 cur_by = self._current_params.get("ParamBodyAngleY", 0.0)
-                self._current_params["ParamBodyAngleY"] = cur_by + (self._mouse_head_y * 0.3 - cur_by) * 0.04
+                self._current_params["ParamBodyAngleY"] = (
+                    cur_by + (self._mouse_head_y * 0.3 - cur_by) * 0.04
+                )
         else:
             # AI 控制头部时，回退到 idle 微转
             if now >= self._next_head_idle_time:
@@ -671,11 +728,8 @@ class Live2DWidget(QOpenGLWidget):
             else:
                 final_value = max(-1.0, min(2.0, final_value))
 
-            try:
+            with contextlib.suppress(Exception):
                 self.model.SetParameterValue(pid, final_value)
-            except Exception:
-                # 参数不存在则忽略
-                pass
 
     def resizeGL(self, width: int, height: int) -> None:
         if self.model and LIVE2D_AVAILABLE:
@@ -688,8 +742,10 @@ class Live2DWidget(QOpenGLWidget):
             self._mouse_press_pos = event.pos()
             self._has_dragged = False
             self.is_dragging = True
-            self.drag_offset = (event.globalPosition().x() - self.window().x(),
-                                event.globalPosition().y() - self.window().y())
+            self.drag_offset = (
+                event.globalPosition().x() - self.window().x(),
+                event.globalPosition().y() - self.window().y(),
+            )
             self.grabMouse()
             event.accept()
         elif event.button() == Qt.MouseButton.RightButton:
@@ -820,7 +876,9 @@ class Live2DWidget(QOpenGLWidget):
                     if expr_path.exists():
                         with open(expr_path, encoding="utf-8") as f:
                             expr_data = json.load(f)
-                        self.available_expressions = [e.get("Name", f"expr_{i}") for i, e in enumerate(expr_data)]
+                        self.available_expressions = [
+                            e.get("Name", f"expr_{i}") for i, e in enumerate(expr_data)
+                        ]
             motions = files.get("Motions", {})
             self.available_motion_groups = {k: len(v) for k, v in motions.items()}
         except Exception as exc:
@@ -858,9 +916,14 @@ class Live2DWidget(QOpenGLWidget):
                 self._last_gaze_print = time.time()
                 _logger.debug(
                     "Mouse gaze: cursor=(%d,%d), head_global=(%d,%d), gaze=(%.2f,%.2f), head=(%.1f,%.1f)",
-                    cursor.x(), cursor.y(), global_head.x(), global_head.y(),
-                    self._mouse_gaze_x, self._mouse_gaze_y,
-                    self._mouse_head_x, self._mouse_head_y,
+                    cursor.x(),
+                    cursor.y(),
+                    global_head.x(),
+                    global_head.y(),
+                    self._mouse_gaze_x,
+                    self._mouse_gaze_y,
+                    self._mouse_head_x,
+                    self._mouse_head_y,
                 )
         except Exception as exc:
             _logger.warning("Mouse gaze error: %s", exc)
@@ -875,8 +938,13 @@ class Live2DWidget(QOpenGLWidget):
     def _trigger_auto_action(self) -> None:
         """随机触发一个自主小动作."""
         actions = [
-            "glance", "wing_flutter", "head_tilt", "micro_smile",
-            "sigh", "brow_raise", "look_around",
+            "glance",
+            "wing_flutter",
+            "head_tilt",
+            "micro_smile",
+            "sigh",
+            "brow_raise",
+            "look_around",
         ]
         action = random.choice(actions)
         now = time.time()
@@ -890,8 +958,8 @@ class Live2DWidget(QOpenGLWidget):
         elif action == "wing_flutter":
             self._auto_targets["Param83"] = 0.5
             self._auto_targets["Param84"] = 0.5
-            self._auto_factors.update({k: 0.12 for k in ["Param83", "Param84"]})
-            self._auto_timers.update({k: now + 0.5 for k in ["Param83", "Param84"]})
+            self._auto_factors.update(dict.fromkeys(["Param83", "Param84"], 0.12))
+            self._auto_timers.update(dict.fromkeys(["Param83", "Param84"], now + 0.5))
         elif action == "head_tilt":
             target_z = random.uniform(-15, 15)
             self._auto_targets["ParamAngleZ"] = target_z
@@ -905,13 +973,17 @@ class Live2DWidget(QOpenGLWidget):
             self._auto_targets["ParamBrowLY"] = 0.5
             self._auto_targets["ParamBrowRY"] = 0.5
             self._auto_targets["ParamMouthOpenY3"] = 0.25
-            self._auto_factors.update({k: 0.05 for k in ["ParamBrowLY", "ParamBrowRY", "ParamMouthOpenY3"]})
-            self._auto_timers.update({k: now + 1.2 for k in ["ParamBrowLY", "ParamBrowRY", "ParamMouthOpenY3"]})
+            self._auto_factors.update(
+                dict.fromkeys(["ParamBrowLY", "ParamBrowRY", "ParamMouthOpenY3"], 0.05)
+            )
+            self._auto_timers.update(
+                dict.fromkeys(["ParamBrowLY", "ParamBrowRY", "ParamMouthOpenY3"], now + 1.2)
+            )
         elif action == "brow_raise":
             self._auto_targets["ParamBrowLY"] = -0.6
             self._auto_targets["ParamBrowRY"] = -0.6
-            self._auto_factors.update({k: 0.08 for k in ["ParamBrowLY", "ParamBrowRY"]})
-            self._auto_timers.update({k: now + 0.8 for k in ["ParamBrowLY", "ParamBrowRY"]})
+            self._auto_factors.update(dict.fromkeys(["ParamBrowLY", "ParamBrowRY"], 0.08))
+            self._auto_timers.update(dict.fromkeys(["ParamBrowLY", "ParamBrowRY"], now + 0.8))
         elif action == "look_around":
             target_x = random.choice([-18, 18])
             self._auto_targets["ParamAngleX"] = target_x
@@ -1069,17 +1141,19 @@ class Live2DWidget(QOpenGLWidget):
             return "没有特殊装饰"
         names = []
         for p in sorted(self._active_props):
-            names.append({
-                "wings_big": "展开着大翅膀",
-                "wings_small": "收着小翅膀",
-                "halo_on": "头顶光环发亮",
-                "twintails": "扎着双马尾",
-                "pray": "双手合十",
-                "microphone": "拿着麦克风",
-                "trail_on": "身后拖尾飘动",
-                "hands_free": "双手自然下垂",
-                "hands_on_chin": "手托着下巴",
-            }.get(p, p))
+            names.append(
+                {
+                    "wings_big": "展开着大翅膀",
+                    "wings_small": "收着小翅膀",
+                    "halo_on": "头顶光环发亮",
+                    "twintails": "扎着双马尾",
+                    "pray": "双手合十",
+                    "microphone": "拿着麦克风",
+                    "trail_on": "身后拖尾飘动",
+                    "hands_free": "双手自然下垂",
+                    "hands_on_chin": "手托着下巴",
+                }.get(p, p)
+            )
         return "、".join(names)
 
     # ------------------------------------------------------------------
@@ -1100,7 +1174,11 @@ class Live2DWidget(QOpenGLWidget):
         mapped = legacy_map.get(name)
         if mapped:
             self.set_emotion(mapped)
-        elif self.model and name in self.available_expressions and hasattr(self.model, "SetExpression"):
+        elif (
+            self.model
+            and name in self.available_expressions
+            and hasattr(self.model, "SetExpression")
+        ):
             # fallback：如果模型有对应的 expression 文件，仍允许直接调用
             try:
                 self.model.SetExpression(name)

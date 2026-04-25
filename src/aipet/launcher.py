@@ -11,14 +11,9 @@ import time
 def _is_gateway_running(port: int = 18790) -> bool:
     """Check if the Gateway is already listening on the given port."""
     import socket
+
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
-            # Send a minimal HTTP request so the WS server doesn't log an ugly EOFError
-            try:
-                sock.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                sock.recv(1024)
-            except Exception:
-                pass
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
             return True
     except OSError:
         return False
@@ -37,6 +32,7 @@ def _start_gateway() -> subprocess.Popen[bytes]:
 def _start_frontend() -> int:
     """Start the Frontend in the current process."""
     from aipet.frontend.app import main as frontend_main
+
     return frontend_main()
 
 

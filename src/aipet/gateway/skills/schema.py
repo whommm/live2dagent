@@ -5,9 +5,9 @@ from __future__ import annotations
 import inspect
 import typing
 from collections.abc import Callable
-from typing import Any, Literal, Union, get_args, get_origin
+from typing import Any
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import create_model
 
 
 def build_tool_schema(
@@ -61,13 +61,13 @@ def _inline_refs(schema: dict[str, Any]) -> None:
 def _walk_and_inline(node: Any, defs: dict[str, Any]) -> None:
     if isinstance(node, dict):
         ref = node.pop("$ref", None)
-        if ref and isinstance(ref, str):
-            if ref.startswith("#/$defs/"):
-                key = ref.split("/")[-1]
-                node.update(defs.get(key, {}))
-            elif ref.startswith("#/definitions/"):
-                key = ref.split("/")[-1]
-                node.update(defs.get(key, {}))
+        if (
+            ref
+            and isinstance(ref, str)
+            and (ref.startswith("#/$defs/") or ref.startswith("#/definitions/"))
+        ):
+            key = ref.split("/")[-1]
+            node.update(defs.get(key, {}))
         for v in node.values():
             _walk_and_inline(v, defs)
     elif isinstance(node, list):

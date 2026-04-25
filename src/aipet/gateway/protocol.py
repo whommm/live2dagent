@@ -21,6 +21,7 @@ class BaseMessage(BaseModel):
 # Client -> Gateway (Requests)
 # ---------------------------------------------------------------------------
 
+
 class ClientHelloPayload(BaseModel):
     client_type: str = "unknown"
     version: str = ""
@@ -60,6 +61,7 @@ class SystemShutdownPayload(BaseModel):
 # ---------------------------------------------------------------------------
 # Gateway -> Client (Events / Responses)
 # ---------------------------------------------------------------------------
+
 
 class ChatStreamStartEvent(BaseModel):
     session_id: str

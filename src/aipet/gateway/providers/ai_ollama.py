@@ -57,6 +57,7 @@ class OllamaProvider:
                     continue
                 try:
                     import json
+
                     data = json.loads(line)
                     msg = data.get("message", {})
                     content = msg.get("content", "")
