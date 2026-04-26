@@ -124,15 +124,12 @@ class TaskScheduler:
         try:
             if gateway is None:
                 result_text = "Error: Gateway not available"
-            elif task.skill_id == "canvas":
-                # Canvas tools need special handling to render on the frontend
-                result = await gateway._handle_canvas_tool(
-                    f"{task.skill_id}:{task.tool_name}", task.arguments
-                )
-                result_text = str(result)[:500]
             else:
                 full_name = f"{task.skill_id}:{task.tool_name}"
-                result = await gateway.tool_router.call(full_name, task.arguments, session_id="main")
+                result = await gateway.tool_router.call(
+                    full_name, task.arguments, session_id="main"
+                )
+                result = await gateway._postprocess_tool_result(full_name, result)
                 if isinstance(result, ToolExecutionResult):
                     result_text = result.to_model_text()[:500]
                 else:

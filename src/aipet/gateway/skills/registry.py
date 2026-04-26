@@ -23,6 +23,7 @@ class SkillInfo:
         permissions: list[str],
         tools: dict[str, Callable[..., Any]],
         source: str = "user",
+        path: Path | None = None,
     ) -> None:
         self.skill_id = skill_id
         self.description = description
@@ -30,6 +31,7 @@ class SkillInfo:
         self.permissions = permissions
         self.tools = tools
         self.source = source
+        self.path = path
 
 
 class SkillRegistry:
@@ -111,7 +113,7 @@ class SkillRegistry:
         spec.loader.exec_module(module)
         tools = getattr(module, "tools", {})
         self._skills[skill_id] = SkillInfo(
-            skill_id, description, brief, permissions, tools, source=source
+            skill_id, description, brief, permissions, tools, source=source, path=init_file
         )
 
     def _parse_skill_md(self, content: str) -> tuple[str, str, list[str]]:

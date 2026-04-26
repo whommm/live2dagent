@@ -203,6 +203,7 @@ class PetWindow(QWidget):
 
         self._canvases: dict[str, LiveCanvasWidget] = {}
         self._canvas_positions: dict[str, tuple[int, int]] = {}
+        self._canvas_layouts: dict[str, tuple[str, int | None, int | None]] = {}
         self.chat_window: ChatWindow | None = None
         self._provider_dialog: ProviderDialog | None = None
         self._enable_tts_action: QAction | None = None
@@ -647,9 +648,13 @@ class PetWindow(QWidget):
         if widget:
             widget.update_data(payload.get("data", {}))
             # Recalculate position after content changes
-            position = payload.get("position", "head")
+            current_layout = self._canvas_layouts.get(canvas_id, ("head", None, None))
+            position = payload.get("position", current_layout[0])
+            custom_x = payload.get("x", current_layout[1])
+            custom_y = payload.get("y", current_layout[2])
+            self._canvas_layouts[canvas_id] = (position, custom_x, custom_y)
             x, y = self._calculate_canvas_position(
-                widget, position, payload.get("x"), payload.get("y")
+                widget, position, custom_x, custom_y, ignore_canvas_id=canvas_id
             )
             widget.move(x, y)
             self._canvas_positions[canvas_id] = (x, y)
@@ -708,12 +713,18 @@ class PetWindow(QWidget):
 
         self._canvases[canvas_id] = widget
         self._canvas_positions[canvas_id] = (x, y)
+        self._canvas_layouts[canvas_id] = (position, payload.get("x"), payload.get("y"))
         self._logger.debug(
             "Canvas shown: id=%s, type=%s, pos=(%d,%d)", canvas_id, canvas_type, x, y
         )
 
     def _calculate_canvas_position(
-        self, widget: LiveCanvasWidget, position: str, custom_x: int | None, custom_y: int | None
+        self,
+        widget: LiveCanvasWidget,
+        position: str,
+        custom_x: int | None,
+        custom_y: int | None,
+        ignore_canvas_id: str | None = None,
     ) -> tuple[int, int]:
         """Calculate canvas position based on strategy."""
         screen = self.screen()
@@ -747,6 +758,8 @@ class PetWindow(QWidget):
         # Avoid overlapping with existing canvases (simple vertical stacking)
         existing_rects = []
         for cid, pos in self._canvas_positions.items():
+            if cid == ignore_canvas_id:
+                continue
             if cid in self._canvases:
                 w = self._canvases[cid]
                 existing_rects.append((pos[0], pos[1], w.width(), w.height()))
@@ -781,16 +794,19 @@ class PetWindow(QWidget):
         widget = self._canvases.get(canvas_id)
         if widget is None:
             return
-        # Use stored position or default to head position
-        pos = self._canvas_positions.get(canvas_id)
+        position, custom_x, custom_y = self._canvas_layouts.get(canvas_id, ("head", None, None))
         x, y = self._calculate_canvas_position(
-            widget, "head", pos[0] if pos else None, pos[1] if pos else None
+            widget,
+            position,
+            custom_x,
+            custom_y,
+            ignore_canvas_id=canvas_id,
         )
         widget.move(x, y)
         self._canvas_positions[canvas_id] = (x, y)
 
     def _on_canvas_widget_closed(self, canvas_id: str) -> None:
-        self._destroy_canvas(canvas_id)
+        self._destroy_canvas(canvas_id, notify_gateway=True)
 
     def _on_canvas_widget_clicked(self, canvas_id: str) -> None:
         widget = self._canvases.get(canvas_id)
@@ -801,15 +817,31 @@ class PetWindow(QWidget):
             return
         if click_action == "open_chat":
             self._show_chat()
-        self._destroy_canvas(canvas_id)
+        self._destroy_canvas(canvas_id, notify_gateway=True)
 
-    def _destroy_canvas(self, canvas_id: str) -> None:
+    def _destroy_canvas(self, canvas_id: str, notify_gateway: bool = False) -> None:
         widget = self._canvases.pop(canvas_id, None)
         if widget:
             widget.hide()
             widget.deleteLater()
         self._canvas_positions.pop(canvas_id, None)
+        self._canvas_layouts.pop(canvas_id, None)
+        if notify_gateway:
+            self._notify_canvas_closed(canvas_id)
         self._logger.debug("Canvas destroyed: %s", canvas_id)
+
+    def _notify_canvas_closed(self, canvas_id: str) -> None:
+        if not canvas_id or not self.client.connected:
+            return
+        fire_and_forget(
+            self.client.send(
+                {
+                    "type": "request",
+                    "method": "canvas.close",
+                    "payload": {"canvas_id": canvas_id},
+                }
+            )
+        )
 
     def _destroy_all_canvases(self) -> None:
         for canvas_id in list(self._canvases.keys()):

@@ -1053,13 +1053,9 @@ class Gateway:
                             ok=True,
                             data=json.loads(self._get_tool_schema_json(args.get("tool_name", ""))),
                         )
-                    elif name.startswith("canvas:"):
-                        result = ToolExecutionResult(
-                            ok=True,
-                            data=await self._handle_canvas_tool(name, args),
-                        )
                     else:
                         result = await self.tool_router.call(name, args, session_id=session_id)
+                    result = await self._postprocess_tool_result(name, result)
                     result_text = self._tool_result_text(result)
                     result_payload = self._tool_result_payload(result)
                     self._logger.debug(
@@ -1201,14 +1197,36 @@ class Gateway:
         )
         return json.dumps(schema, ensure_ascii=False, indent=2)
 
-    async def _handle_canvas_tool(self, name: str, args: dict[str, Any]) -> str:
-        """Handle canvas:* tool calls by creating canvas elements and broadcasting."""
-        import json
+    async def _postprocess_tool_result(
+        self, name: str, result: ToolExecutionResult | str
+    ) -> ToolExecutionResult | str:
+        """Apply tool side effects after normal tool execution."""
+        if (
+            not name.startswith("canvas:")
+            or not isinstance(result, ToolExecutionResult)
+            or not result.ok
+        ):
+            return result
+        try:
+            return ToolExecutionResult(
+                ok=True,
+                data=await self._handle_canvas_tool_result(name, result.data),
+            )
+        except Exception as exc:
+            return ToolExecutionResult(
+                ok=False,
+                error={"code": "CANVAS_RENDER_ERROR", "message": str(exc)},
+            )
 
+    async def _handle_canvas_tool_result(self, name: str, payload: Any) -> dict[str, Any]:
+        """Render the structured action returned by a canvas skill tool."""
+        if not isinstance(payload, dict):
+            raise ValueError(f"Canvas tool '{name}' returned a non-object payload.")
         tool_name = name.split(":", 1)[1]
-        if tool_name == "close":
-            canvas_id = args.get("canvas_id", "")
-            self.canvas.close(canvas_id)
+        action = str(payload.get("action", "show")).lower()
+        if tool_name == "close" or action == "close":
+            canvas_id = str(payload.get("canvas_id", ""))
+            ok = self.canvas.close(canvas_id)
             await self._broadcast(
                 {
                     "type": "event",
@@ -1216,10 +1234,9 @@ class Gateway:
                     "payload": {"canvas_id": canvas_id},
                 }
             )
-            return json.dumps({"status": "closed", "canvas_id": canvas_id}, ensure_ascii=False)
+            return {"status": "closed" if ok else "not_found", "canvas_id": canvas_id}
 
-        # Build canvas payload from tool args
-        canvas_type = args.get("canvas_type", "bubble")
+        canvas_type = payload.get("canvas_type", "bubble")
         if tool_name == "show_bubble":
             canvas_type = "bubble"
         elif tool_name == "show_card":
@@ -1231,19 +1248,25 @@ class Gateway:
         elif tool_name == "show_code":
             canvas_type = "code"
 
-        data = args.get("data", {})
-        if not data:
-            # AI passes canvas tool arguments flat (e.g. title, content, items);
-            # treat the whole args dict as data so the frontend can read content.
-            data = dict(args)
-        title = args.get("title", "") or data.get("title", "")
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        title = str(payload.get("title", "") or data.get("title", ""))
         element = self.canvas.create(
-            canvas_type=canvas_type,
+            canvas_type=str(canvas_type),
             data=data,
             title=title,
-            duration_ms=args.get("duration_ms", 0),
-            width=args.get("width", 280),
-            click_action="open_chat" if canvas_type == "bubble" else "none",
+            position=str(payload.get("position", "head")),
+            x=payload.get("x"),
+            y=payload.get("y"),
+            width=int(payload.get("width", 280)),
+            height=int(payload.get("height", 0)),
+            duration_ms=int(payload.get("duration_ms", 0)),
+            click_action=str(
+                payload.get("click_action", "open_chat" if canvas_type == "bubble" else "none")
+            ),
+            style=payload.get("style", {}),
+            canvas_id=payload.get("canvas_id"),
         )
         await self._broadcast(
             {
@@ -1252,7 +1275,7 @@ class Gateway:
                 "payload": self.canvas.to_dict(element),
             }
         )
-        return json.dumps({"status": "shown", "canvas_id": element.canvas_id}, ensure_ascii=False)
+        return {"status": "shown", "canvas_id": element.canvas_id}
 
     async def handle_client(self, websocket: ServerConnection) -> None:
         """Handle a single client connection."""
