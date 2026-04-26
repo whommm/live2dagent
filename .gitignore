@@ -57,9 +57,15 @@ live2dmodels/**/*.png
 live2dmodels/**/*.jpg
 live2dmodels/**/*.jpeg
 
-# Config files with sensitive credentials
+# Personal config files with sensitive/private data
 config/gateway.toml
 config/providers.toml
+config/memory.md
+config/soul.md
+config/ai_tools.toml
+
+# Third-party reference projects (not for distribution)
+参考项目/
 
 # PyInstaller
 *.spec
