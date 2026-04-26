@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -35,7 +35,6 @@ class ChatTriggerButton(QWidget):
         super().__init__(None)  # Top-level window
         self._pet = pet_window
         self._is_expanded = False
-        self._hover_animation: QPropertyAnimation | None = None
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -75,7 +74,7 @@ class ChatTriggerButton(QWidget):
             return
         geo = screen.availableGeometry()
         self.setGeometry(
-            geo.right() - self._COLLAPSED_W,
+            geo.right() - self._EXPANDED_W + 1,
             geo.center().y() - self._HEIGHT // 2,
             self._EXPANDED_W,
             self._HEIGHT,
@@ -116,24 +115,7 @@ class ChatTriggerButton(QWidget):
         if self._is_expanded == expanded:
             return
         self._is_expanded = expanded
-
-        if self._hover_animation is not None:
-            self._hover_animation.stop()
-
-        target = self._EXPANDED_W if expanded else self._COLLAPSED_W
-        self._hover_animation = QPropertyAnimation(self, b"geometry")
-        self._hover_animation.setDuration(180)
-        self._hover_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        geo = self.geometry()
-        start_rect = QRect(geo.x(), geo.y(), geo.width(), geo.height())
-        # Keep the right edge pinned; grow / shrink to the left
-        end_x = geo.right() - target
-        end_rect = QRect(end_x, geo.y(), target, geo.height())
-
-        self._hover_animation.setStartValue(start_rect)
-        self._hover_animation.setEndValue(end_rect)
-        self._hover_animation.start()
+        self.update()
 
     # ------------------------------------------------------------------
     # Drawing
@@ -143,9 +125,10 @@ class ChatTriggerButton(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w = self.width()
+        w = self._EXPANDED_W if self._is_expanded else self._COLLAPSED_W
         h = self.height()
         radius = w / 2.0
+        x = self.width() - w
 
         # Background colour: restrained enough to sit beside the desktop pet.
         bg = QColor(MaterialTheme.primary)
@@ -153,7 +136,7 @@ class ChatTriggerButton(QWidget):
 
         painter.setBrush(bg)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(0, 0, w, h, radius, radius)
+        painter.drawRoundedRect(x, 0, w, h, radius, radius)
 
         # Draw label when expanded. Avoid emoji so Windows/Qt rendering stays consistent.
         if self._is_expanded and w > 20:
