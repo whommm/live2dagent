@@ -53,6 +53,8 @@ class OpenAIProvider:
         tools: list[Tool] | None,
         temperature: float | None,
         max_tokens: int | None,
+        stream: bool = True,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         openai_messages: list[dict[str, Any]] = []
         for m in messages:
@@ -95,7 +97,7 @@ class OpenAIProvider:
         payload: dict[str, Any] = {
             "model": self._model_id,
             "messages": openai_messages,
-            "stream": True,
+            "stream": stream,
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -103,18 +105,78 @@ class OpenAIProvider:
             payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = [t.model_dump() for t in tools]
+        if response_format:
+            payload["response_format"] = response_format
         payload.update(self._extra_params)
         # Debug: log tool_call_id pairing
         for idx, om in enumerate(openai_messages):
             if om.get("role") == "assistant" and om.get("tool_calls"):
-                _logger.info(
+                _logger.debug(
                     "Payload assistant[%d] tool_call_ids: %s",
                     idx,
                     [tc.get("id") for tc in om["tool_calls"]],
                 )
             elif om.get("role") == "tool":
-                _logger.info("Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id"))
+                _logger.debug("Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id"))
         return payload
+
+    async def complete_json(
+        self,
+        messages: list[Message],
+        schema: dict[str, Any] | None = None,
+        schema_name: str = "response",
+        temperature: float | None = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Return a single JSON response using the strongest supported format.
+
+        OpenAI-compatible providers vary: some support strict json_schema,
+        some only support json_object, and a few support neither.  Try the
+        strictest protocol first and gracefully fall back.
+        """
+        url = f"{self._base_url}/chat/completions"
+        response_formats: list[dict[str, Any] | None] = []
+        if schema:
+            response_formats.append(
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+            )
+        response_formats.append({"type": "json_object"})
+        response_formats.append(None)
+
+        last_error: Exception | None = None
+        for response_format in response_formats:
+            payload = self._build_payload(
+                messages,
+                tools=None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+                response_format=response_format,
+            )
+            try:
+                resp = await self._client.post(url, headers=self._headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                choices = data.get("choices", [])
+                if not choices:
+                    return ""
+                message = choices[0].get("message", {})
+                return message.get("content") or ""
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response.status_code == 400:
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        return ""
 
     async def chat(
         self,

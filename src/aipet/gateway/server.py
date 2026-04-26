@@ -46,6 +46,7 @@ class Gateway:
     def __init__(self, config: GatewayConfig | None = None) -> None:
         self._logger = structlog.get_logger("gateway")
         self.config = config or GatewayConfig()
+        self._load_ai_tool_settings()
         self.bus = EventBus()
         self.store = StateStore(initial_state=AppState(), bus=self.bus)
         self.sessions = SessionManager(bus=self.bus)
@@ -111,6 +112,60 @@ class Gateway:
 
         # Proactive chat
         self.proactive = ProactiveChatService(self)
+
+    def _ai_tool_settings_path(self) -> Any:
+        return get_config_dir() / "ai_tools.toml"
+
+    def _load_ai_tool_settings(self) -> None:
+        path = self._ai_tool_settings_path()
+        if not path.exists():
+            return
+        try:
+            import toml
+
+            data = toml.load(path)
+        except Exception:
+            self._logger.exception("Failed to load AI/tool settings")
+            return
+        for key in self._runtime_settings_payload_keys():
+            if key in data:
+                with contextlib.suppress(Exception):
+                    setattr(self.config, key, data[key])
+
+    def _save_ai_tool_settings(self) -> None:
+        path = self._ai_tool_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import toml
+
+            data = {key: getattr(self.config, key) for key in self._runtime_settings_payload_keys()}
+            with open(path, "w", encoding="utf-8") as f:
+                toml.dump(data, f)
+        except Exception:
+            self._logger.exception("Failed to save AI/tool settings")
+
+    @staticmethod
+    def _runtime_settings_payload_keys() -> tuple[str, ...]:
+        return (
+            "tts_auto_play",
+            "proactive_enabled",
+            "proactive_tts",
+            "tool_calling_strategy",
+            "tool_context_mode",
+            "phase1_max_candidate_tools",
+            "phase1_direct_confidence_threshold",
+            "max_tool_loops",
+            "enable_streaming_guard",
+            "tool_debug_events",
+            "intent_provider_id",
+            "intent_model",
+            "tool_provider_id",
+            "tool_model",
+            "summary_provider_id",
+            "summary_model",
+            "proactive_provider_id",
+            "proactive_model",
+        )
 
     async def init(self) -> None:
         """Async initialization: load persisted sessions and messages."""
@@ -187,6 +242,19 @@ class Gateway:
             self._logger.info(
                 "Provider already current", target_id=target_id, model=config.ai_model
             )
+
+    def _create_role_ai_provider(self, role: str) -> Any:
+        """Create a provider for a specialized model role.
+
+        Role-specific settings are optional.  When unset or invalid, the role
+        follows the current chat model.
+        """
+        provider_id = getattr(self.config, f"{role}_provider_id", None)
+        model = getattr(self.config, f"{role}_model", None)
+        get_provider = getattr(self.provider_manager, "get_provider", None)
+        if provider_id and callable(get_provider) and get_provider(provider_id):
+            return self.provider_manager.create_ai_provider(provider_id, model)
+        return self.provider_manager.create_ai_provider()
 
     def _read_soul(self) -> str:
         """Read the soul.md system prompt."""
@@ -443,7 +511,7 @@ class Gateway:
         for m in older:
             prompt += f"{m.role}: {m.content}\n"
         try:
-            ai_provider = self.provider_manager.create_ai_provider()
+            ai_provider = self._create_role_ai_provider("summary")
             summary = ""
             async for chunk in ai_provider.chat([AIMessage(role="user", content=prompt)]):
                 summary += chunk.delta
@@ -493,6 +561,7 @@ class Gateway:
         include_tools: bool = True,
         include_live2d_tags: bool = False,
         tool_briefs: list[dict[str, str]] | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
     ) -> list[Any]:
         """Build the message list for the AI provider from session context.
 
@@ -514,25 +583,23 @@ class Gateway:
         if include_tools:
             briefs = tool_briefs if tool_briefs is not None else self.skills.list_tools_brief()
             if briefs:
-                tool_desc = (
-                    "You have access to the following tools. "
-                    "When you decide to use a tool, first call system:get_tool_schema "
-                    "to get its full parameter definition, then call the actual tool "
-                    "with the correct arguments.\n\n"
-                )
+                has_full_schemas = bool(tool_schemas)
+                tool_desc = "You have access to the following tools.\n\n"
                 for b in briefs:
                     tool_desc += f"- {b['name']} — {b['brief']}\n"
                 tool_desc += "\n"
+                if has_full_schemas:
+                    tool_desc += "Full schemas for active tools:\n"
+                    for schema in tool_schemas:
+                        tool_desc += json.dumps(schema, ensure_ascii=False, indent=2)
+                        tool_desc += "\n"
+                    tool_desc += "\n"
+                    tool_desc += (
+                        "The full schemas above are already available. "
+                        "When a tool is needed, call the actual tool directly. "
+                        "Do not call system:get_tool_schema for these active tools.\n\n"
+                    )
                 tool_desc += (
-                    "Meta-tool (always available):\n"
-                    "Tool: system:get_tool_schema\n"
-                    "Description: 获取指定工具的完整参数定义。"
-                    "当你决定调用某个工具但不知道具体参数格式时，"
-                    "先调用此工具获取参数详情。\n"
-                    "Parameters:\n"
-                    "  - tool_name: string (required) — 工具全名，格式为 "
-                    "skill_id:tool_name，如 weather:get_weather\n"
-                    "\n"
                     "--- TOOL CALLING RULES (STRICT) ---\n"
                     "When you need to use one or more tools, you MUST output "
                     "EXACTLY ONE raw JSON object.\n"
@@ -545,16 +612,27 @@ class Gateway:
                     "WRONG: JSON wrapped in ```code blocks```\n"
                     "WRONG: XML / DSML tags like <｜DSML｜tool_calls>\n"
                     "RIGHT:  Only the raw JSON object itself, nothing else.\n\n"
-                    "Example flow:\n"
-                    '  User: "北京天气怎么样？"\n'
-                    '  Assistant: {"tool_calls": [{"name": "system:get_tool_schema", '
-                    '"arguments": {"tool_name": "weather:get_weather"}}]}\n'
-                    "  (schema returned)\n"
-                    '  Assistant: {"tool_calls": [{"name": "weather:get_weather", '
-                    '"arguments": {"city": "北京"}}]}\n\n'
                     "If no tool is needed, respond normally in plain text. "
                     "Do NOT output JSON if no tool is needed."
                 )
+                if not has_full_schemas:
+                    tool_desc += (
+                        "\n\nMeta-tool (always available):\n"
+                        "Tool: system:get_tool_schema\n"
+                        "Description: Get the full parameter schema for a tool before "
+                        "calling it.\n"
+                        "Parameters:\n"
+                        "  - tool_name: string (required), format skill_id:tool_name, "
+                        "for example weather:get_weather\n"
+                        "\n"
+                        "Example flow:\n"
+                        '  User: "北京天气怎么样？"\n'
+                        '  Assistant: {"tool_calls": [{"name": "system:get_tool_schema", '
+                        '"arguments": {"tool_name": "weather:get_weather"}}]}\n'
+                        "  (schema returned)\n"
+                        '  Assistant: {"tool_calls": [{"name": "weather:get_weather", '
+                        '"arguments": {"city": "北京"}}]}\n'
+                    )
                 # Inject skill authoring guide when skill_writer is available
                 if "skill_writer" in self.skills._skills:
                     tool_desc += (
@@ -664,6 +742,12 @@ class Gateway:
         if result is not None:
             return result
 
+        # Shared parser used by the streaming guard.  It covers embedded JSON
+        # and provider-specific DSML text before we fall back to older logic.
+        guarded = ToolCallStreamGuard._try_parse_tool_json(text)
+        if guarded is not None:
+            return guarded
+
         # 3. Parse DeepSeek DSML format
         # DeepSeek sometimes outputs its native DSML tool-calling syntax
         # instead of the requested JSON. We extract it as a fallback.
@@ -765,6 +849,21 @@ class Gateway:
         tools = [t for t in all_tools if t.function.get("name", "") in name_set]
         return briefs, tools
 
+    @staticmethod
+    def _phase2_tool_names(tool_calls: list[dict[str, Any]]) -> list[str]:
+        """Return real tool names that should stay visible in the next round."""
+        names: list[str] = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("arguments", {})
+            if name == "system:get_tool_schema":
+                target = args.get("tool_name", "") if isinstance(args, dict) else ""
+                if target:
+                    names.append(target)
+            elif name:
+                names.append(name)
+        return list(dict.fromkeys(names))
+
     async def _resolve_tool_calls(
         self,
         session_id: str,
@@ -775,7 +874,7 @@ class Gateway:
     ) -> Message:
         """If the AI response contains tool calls, execute them and get the final reply."""
 
-        ai_provider = self.provider_manager.create_ai_provider()
+        ai_provider = self._create_role_ai_provider("tool")
         full_text = initial_text.strip()
 
         parsed = raw_tool_calls if raw_tool_calls is not None else self._parse_tool_calls(full_text)
@@ -785,7 +884,8 @@ class Gateway:
 
         loop_idx = -1
         reasoning_text = ""
-        for loop_idx in range(5):
+        max_loops = max(1, min(self.config.max_tool_loops, 10))
+        for loop_idx in range(max_loops):
             if not parsed:
                 self._logger.debug("Tool resolve no calls, breaking", loop_idx=loop_idx)
                 break
@@ -900,18 +1000,20 @@ class Gateway:
             # Phase-2 optimisation: only include the tools that were actually
             # invoked in the previous round.  This keeps the context small and
             # prevents the model from being distracted by unrelated skills.
-            active_tool_names = [tc.get("name", "") for tc in parsed]
+            active_tool_names = self._phase2_tool_names(parsed)
             tool_briefs, tools = self._filter_tools_by_names(active_tool_names)
+            tool_schemas = [t.function for t in tools]
             ai_messages = self._build_ai_messages(
                 session_id,
                 include_tools=True,
                 include_live2d_tags=True,
                 tool_briefs=tool_briefs,
+                tool_schemas=tool_schemas,
             )
             full_text = ""
             reasoning_text = ""
             next_raw_tool_calls: list[dict[str, Any]] | None = None
-            async for chunk in ai_provider.chat(ai_messages, tools=tools):
+            async for chunk in ai_provider.chat(ai_messages, tools=None):
                 full_text += chunk.delta
                 if getattr(chunk, "reasoning_content", None):
                     reasoning_text += chunk.reasoning_content
@@ -1177,9 +1279,13 @@ class Gateway:
                 client_id,
                 f"Provider '{current_entry.name}' is missing API key. Falling back to Echo.",
             )
-        # Force text-mode two-phase tool calling for all providers
+        include_tools, tool_briefs, tool_schemas = await self._plan_tool_context(content)
         ai_messages = self._build_ai_messages(
-            session.id, include_tools=True, include_live2d_tags=True
+            session.id,
+            include_tools=include_tools,
+            include_live2d_tags=True,
+            tool_briefs=tool_briefs,
+            tool_schemas=tool_schemas,
         )
         tools = None
         full_text = ""
@@ -1213,6 +1319,57 @@ class Gateway:
         )
         await self._play_tts(assistant_msg.content)
 
+    async def _plan_tool_context(
+        self, content: str
+    ) -> tuple[bool, list[dict[str, str]] | None, list[dict[str, Any]] | None]:
+        """Decide whether the next model call should include tool instructions."""
+        include_tools = True
+        tool_briefs: list[dict[str, str]] | None = None
+        tool_schemas: list[dict[str, Any]] | None = None
+
+        if self.config.tool_calling_strategy != "phase1_decision":
+            return include_tools, tool_briefs, tool_schemas
+
+        candidate_briefs = self._select_candidate_tools(content)
+        if not candidate_briefs:
+            return False, None, None
+
+        ai_provider = self._create_role_ai_provider("intent")
+        decider = ToolDecider(ai_provider, max_tokens=self.config.phase1_max_tokens)
+        try:
+            decision = await decider.decide(content, candidate_briefs)
+        except Exception:
+            self._logger.exception("Phase-1 decision failed; falling back to tool prompts")
+            return True, candidate_briefs, None
+
+        threshold = self.config.phase1_direct_confidence_threshold
+        if decision.action == "direct" and decision.confidence >= threshold:
+            self._logger.info("Phase-1 decision: direct reply", confidence=decision.confidence)
+            return False, None, None
+
+        if decision.action == "direct":
+            self._logger.info(
+                "Phase-1 direct decision below threshold; keeping tool prompts",
+                confidence=decision.confidence,
+            )
+            return True, candidate_briefs, None
+
+        if decision.selected_tools:
+            selected_names = {t.name for t in decision.selected_tools}
+            selected_briefs = [b for b in candidate_briefs if b["name"] in selected_names]
+            if self.config.tool_context_mode == "direct_schema":
+                _, tools = self._filter_tools_by_names([b["name"] for b in selected_briefs])
+                tool_schemas = [t.function for t in tools]
+            self._logger.info(
+                "Phase-1 decision: use tools",
+                selected=[b["name"] for b in selected_briefs],
+                confidence=decision.confidence,
+            )
+            return True, selected_briefs, tool_schemas
+
+        self._logger.info("Phase-1 tool decision had no valid tools; keeping candidates")
+        return True, candidate_briefs, None
+
     def _select_candidate_tools(self, user_content: str) -> list[dict[str, str]]:
         """Return candidate tool briefs for Phase-1 decision.
 
@@ -1227,9 +1384,28 @@ class Gateway:
         """
         briefs = self.skills.list_tools_brief()
         max_k = self.config.phase1_max_candidate_tools
+        lowered_content = user_content.lower()
+        intent_keywords: dict[str, tuple[str, ...]] = {
+            "weather": ("weather", "\u5929\u6c14", "\u6c14\u6e29", "\u4e0b\u96e8", "\u7a7f\u8863"),
+            "time": ("time", "\u65f6\u95f4", "\u51e0\u70b9", "\u65e5\u671f"),
+            "file": ("file", "\u6587\u4ef6", "\u8bfb\u53d6", "\u5199\u5165", "\u76ee\u5f55"),
+            "scheduler": ("schedule", "remind", "\u63d0\u9192", "\u5b9a\u65f6", "\u8ba1\u5212"),
+            "calculator": ("calculate", "calculator", "\u8ba1\u7b97", "\u7b97\u4e00\u4e0b"),
+            "random": ("random", "dice", "\u968f\u673a", "\u9ab0\u5b50", "\u62bd\u7b7e"),
+            "canvas": ("canvas", "card", "\u5361\u7247", "\u6c14\u6ce1", "\u5c55\u793a"),
+            "memory": ("memory", "\u8bb0\u4f4f", "\u8bb0\u5fc6", "\u5fd8\u6389"),
+            "shell": ("shell", "command", "\u547d\u4ee4", "\u7ec8\u7aef"),
+            "skill_writer": ("skill", "plugin", "\u6280\u80fd", "\u5de5\u5177", "\u63d2\u4ef6"),
+            "skill_tester": ("test", "\u6d4b\u8bd5", "\u9a8c\u8bc1"),
+        }
 
         # Extract English words from the user query.
         query_words = set(re.findall(r"[a-zA-Z]{2,}", user_content.lower()))
+        if not query_words and any(
+            any(keyword in lowered_content for keyword in keywords)
+            for keywords in intent_keywords.values()
+        ):
+            query_words = {"__tool_intent__"}
 
         if not query_words:
             # Pure Chinese / no recognizable keywords → conservative fallback.
@@ -1242,6 +1418,10 @@ class Gateway:
             score = 0
             name = b["name"].lower()
             brief_text = b["brief"].lower()
+            skill_id = name.split(":", 1)[0]
+            for target_skill, keywords in intent_keywords.items():
+                if target_skill == skill_id and any(k in lowered_content for k in keywords):
+                    score += 100
 
             # Name overlap (high weight) – e.g. "weather" in "weather:get_weather"
             name_words = set(re.findall(r"[a-zA-Z]{2,}", name))
@@ -1307,56 +1487,22 @@ class Gateway:
                 client_id,
                 f"Provider '{current_entry.name}' is missing API key. Falling back to Echo.",
             )
-        # ------------------------------------------------------------------
-        # Phase 1: decide whether tools are needed (optional, config-driven)
-        # ------------------------------------------------------------------
-        tool_briefs: list[dict[str, str]] | None = None
-        include_tools = True
-
-        if self.config.tool_calling_strategy == "phase1_decision":
-            candidate_briefs = self._select_candidate_tools(content)
-            if candidate_briefs:
-                decider = ToolDecider(
-                    ai_provider, max_tokens=self.config.phase1_max_tokens
-                )
-                try:
-                    decision = await decider.decide(content, candidate_briefs)
-                except Exception:
-                    self._logger.exception("Phase-1 decision failed; falling back to legacy")
-                    decision = None
-
-                if decision and decision.action == "direct":
-                    include_tools = False
-                    self._logger.info("Phase-1 decision: direct reply")
-                elif decision and decision.selected_tools:
-                    selected_names = {t.name for t in decision.selected_tools}
-                    tool_briefs = [
-                        b for b in candidate_briefs if b["name"] in selected_names
-                    ]
-                    self._logger.info(
-                        "Phase-1 decision: use tools",
-                        selected=[b["name"] for b in tool_briefs],
-                    )
-                else:
-                    self._logger.info(
-                        "Phase-1 decision: fallback to legacy (no tools matched)"
-                    )
-            else:
-                include_tools = False
+        include_tools, tool_briefs, tool_schemas = await self._plan_tool_context(content)
 
         ai_messages = self._build_ai_messages(
             session.id,
             include_tools=include_tools,
             include_live2d_tags=True,
             tool_briefs=tool_briefs,
+            tool_schemas=tool_schemas,
         )
         tools = None
         full_text = ""
         reasoning_text = ""
         raw_tool_calls: list[dict[str, Any]] | None = None
         guard = (
-            ToolCallStreamGuard()
-            if self.config.enable_streaming_guard
+            ToolCallStreamGuard(max_buffer_chars=65536, hold_initial_text=include_tools)
+            if self.config.enable_streaming_guard and include_tools
             else None
         )
         try:
@@ -1803,6 +1949,38 @@ class Gateway:
             self.config.proactive_enabled = bool(payload["proactive_enabled"])
         if "proactive_tts" in payload:
             self.config.proactive_tts = bool(payload["proactive_tts"])
+        if "tool_calling_strategy" in payload:
+            strategy = payload["tool_calling_strategy"]
+            if strategy in {"legacy", "phase1_decision"}:
+                self.config.tool_calling_strategy = strategy
+        if "tool_context_mode" in payload:
+            mode = payload["tool_context_mode"]
+            if mode in {"brief_schema", "direct_schema"}:
+                self.config.tool_context_mode = mode
+        if "phase1_max_candidate_tools" in payload:
+            self.config.phase1_max_candidate_tools = max(
+                1, min(int(payload["phase1_max_candidate_tools"]), 50)
+            )
+        if "phase1_direct_confidence_threshold" in payload:
+            self.config.phase1_direct_confidence_threshold = max(
+                0.0, min(float(payload["phase1_direct_confidence_threshold"]), 1.0)
+            )
+        if "max_tool_loops" in payload:
+            self.config.max_tool_loops = max(1, min(int(payload["max_tool_loops"]), 10))
+        if "enable_streaming_guard" in payload:
+            self.config.enable_streaming_guard = bool(payload["enable_streaming_guard"])
+        if "tool_debug_events" in payload:
+            self.config.tool_debug_events = bool(payload["tool_debug_events"])
+        for role in ("intent", "tool", "summary", "proactive"):
+            provider_key = f"{role}_provider_id"
+            model_key = f"{role}_model"
+            if provider_key in payload:
+                value = payload[provider_key]
+                setattr(self.config, provider_key, value or None)
+            if model_key in payload:
+                value = payload[model_key]
+                setattr(self.config, model_key, value or None)
+        self._save_ai_tool_settings()
 
         settings = self._runtime_settings_payload()
         await self._broadcast(
@@ -1822,11 +2000,7 @@ class Gateway:
         )
 
     def _runtime_settings_payload(self) -> dict[str, Any]:
-        return {
-            "tts_auto_play": self.config.tts_auto_play,
-            "proactive_enabled": self.config.proactive_enabled,
-            "proactive_tts": self.config.proactive_tts,
-        }
+        return {key: getattr(self.config, key) for key in self._runtime_settings_payload_keys()}
 
     async def _handle_tts_stop(self, client_id: str, payload: dict[str, Any]) -> None:
         """Stop current TTS playback and clear the queue."""
@@ -2002,7 +2176,7 @@ class ProactiveChatService:
             from aipet.gateway.providers.ai_echo import EchoProvider
             from aipet.gateway.providers.factory import create_ai_provider
 
-            ai_provider = self.gateway.provider_manager.create_ai_provider()
+            ai_provider = self.gateway._create_role_ai_provider("proactive")
             name = ai_provider.name
             model_id = ai_provider.model_id
             self._logger.debug("Provider created", name=name, model_id=model_id)
@@ -2027,7 +2201,11 @@ class ProactiveChatService:
                 messages.append(all_messages[0])
 
             # Add recent user/assistant exchanges (up to 3 rounds = 6 messages)
-            recent = [m for m in all_messages[1:] if m.role in ("user", "assistant")]
+            recent = [
+                m
+                for m in all_messages[1:]
+                if m.role in ("user", "assistant") and not getattr(m, "tool_calls", None)
+            ]
             messages.extend(recent[-6:])
 
             now = datetime.now().strftime("%H:%M")

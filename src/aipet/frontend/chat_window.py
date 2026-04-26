@@ -8,13 +8,13 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from markdown_it import MarkdownIt
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QMouseEvent, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,9 +38,6 @@ from PySide6.QtWidgets import (
 
 from aipet.frontend.client import GatewayClient, fire_and_forget
 from aipet.frontend.theme import MaterialTheme
-
-if TYPE_CHECKING:
-    from aipet.frontend.provider_dialog import ProviderDialog
 
 
 class MessageBubble(QWidget):
@@ -885,7 +882,7 @@ class ChatWindow(QWidget):
         self._is_sending = False
         self._is_switching = False
         self._is_near_bottom = True
-        self._provider_dialog: ProviderDialog | None = None
+        self._provider_dialog: Any | None = None
         self._shown_disconnect_msg = False
         self._scroll_animation: QPropertyAnimation | None = None
         self._attachments: list[str] = []
@@ -1569,9 +1566,11 @@ class ChatWindow(QWidget):
             container.setProperty("session_item", True)
             container.setMouseTracking(True)
             container.installEventFilter(self)
+            container.setFixedHeight(44)
             row = QHBoxLayout(container)
-            row.setContentsMargins(12, 10, 8, 10)
-            row.setSpacing(6)
+            row.setContentsMargins(10, 4, 6, 4)
+            row.setSpacing(8)
+            row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
             # Label: elide long names so buttons are always visible
             label = QLabel()
@@ -1590,13 +1589,15 @@ class ChatWindow(QWidget):
             # Action buttons container (shown on hover)
             btn_container = QWidget()
             btn_container.setProperty("action_buttons", True)
+            btn_container.setFixedSize(58, 32)
             btn_layout = QHBoxLayout(btn_container)
             btn_layout.setContentsMargins(0, 0, 0, 0)
             btn_layout.setSpacing(4)
+            btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             edit_btn = QPushButton("改")
-            edit_btn.setFixedSize(24, 24)
-            edit_btn.setStyleSheet(MaterialTheme.icon_button(size=24))
+            edit_btn.setFixedSize(28, 28)
+            edit_btn.setStyleSheet(MaterialTheme.icon_button(size=28))
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.setToolTip("重命名会话")
             edit_btn.clicked.connect(
@@ -1607,8 +1608,8 @@ class ChatWindow(QWidget):
             btn_layout.addWidget(edit_btn)
 
             del_btn = QPushButton("删")
-            del_btn.setFixedSize(24, 24)
-            del_btn.setStyleSheet(MaterialTheme.icon_button(size=24, danger=True))
+            del_btn.setFixedSize(28, 28)
+            del_btn.setStyleSheet(MaterialTheme.icon_button(size=28, danger=True))
             del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             del_btn.setToolTip("删除会话")
             del_btn.clicked.connect(
@@ -1620,7 +1621,7 @@ class ChatWindow(QWidget):
             row.addWidget(btn_container)
 
             self.session_list.setItemWidget(item, container)
-            item.setSizeHint(container.sizeHint())
+            item.setSizeHint(QSize(0, 48))
 
         self._highlight_current_session()
 
@@ -1939,7 +1940,7 @@ class ChatWindow(QWidget):
             self._populate_model_selector()
 
     def _on_manage_providers(self) -> None:
-        from aipet.frontend.provider_dialog import ProviderDialog
+        from aipet.frontend.ai_tool_settings_dialog import AIToolSettingsDialog
 
         if hasattr(self, "_provider_dialog") and self._provider_dialog is not None:
             try:
@@ -1950,17 +1951,21 @@ class ChatWindow(QWidget):
             except RuntimeError:
                 self._provider_dialog = None
 
-        dialog = ProviderDialog(self.client, self)
+        dialog = AIToolSettingsDialog(self.client, self)
         self._provider_dialog = dialog
         dialog.finished.connect(lambda: setattr(self, "_provider_dialog", None))
         dialog.providers_changed.connect(lambda: asyncio.ensure_future(self._load_providers()))
+        dialog.settings_changed.connect(lambda: asyncio.ensure_future(self._load_providers()))
         asyncio.ensure_future(self._load_and_show_provider_dialog(dialog))
 
-    async def _load_and_show_provider_dialog(self, dialog: ProviderDialog) -> None:
+    async def _load_and_show_provider_dialog(self, dialog: Any) -> None:
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
-        await dialog._load_providers()
+        if hasattr(dialog, "load"):
+            await dialog.load()
+        else:
+            await dialog._load_providers()
 
     # ------------------------------------------------------------------
     # Bubble management

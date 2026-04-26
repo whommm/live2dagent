@@ -44,10 +44,27 @@ class GatewayConfig(BaseSettings):
     proactive_interval_max: int = Field(default=180)
     proactive_tts: bool = Field(default=True)
 
-    tool_calling_strategy: Literal["legacy", "phase1_decision"] = Field(default="legacy")
+    tool_calling_strategy: Literal["legacy", "phase1_decision"] = Field(
+        default="phase1_decision"
+    )
+    tool_context_mode: Literal["brief_schema", "direct_schema"] = Field(
+        default="direct_schema"
+    )
     phase1_max_tokens: int = Field(default=128)
-    phase1_max_candidate_tools: int = Field(default=5)
+    phase1_max_candidate_tools: int = Field(default=8)
+    phase1_direct_confidence_threshold: float = Field(default=0.55)
+    max_tool_loops: int = Field(default=5)
     enable_streaming_guard: bool = Field(default=True)
+    tool_debug_events: bool = Field(default=False)
+
+    intent_provider_id: str | None = Field(default=None)
+    intent_model: str | None = Field(default=None)
+    tool_provider_id: str | None = Field(default=None)
+    tool_model: str | None = Field(default=None)
+    summary_provider_id: str | None = Field(default=None)
+    summary_model: str | None = Field(default=None)
+    proactive_provider_id: str | None = Field(default=None)
+    proactive_model: str | None = Field(default=None)
 
     @classmethod
     def settings_customise_sources(
