@@ -946,14 +946,16 @@ class PetWindow(QWidget):
             self._set_window_transparent(False)
             return
         cursor_pos = QCursor.pos()
-        # If the cursor is over the chat trigger button, disable passthrough
-        # so the button can receive hover and click events.
+        # The chat trigger is its own top-level window.  Keep the full-screen
+        # pet window click-through here so mouse events can reach the trigger
+        # instead of being interpreted as model dragging.
         if (
             hasattr(self, "_chat_trigger")
             and self._chat_trigger is not None
             and self._chat_trigger.hit_test_global(cursor_pos)
         ):
-            self._set_window_transparent(False)
+            self._chat_trigger.raise_()
+            self._set_window_transparent(True)
             return
         local_pos = self.live2d_widget.mapFromGlobal(cursor_pos)
         hit = self.live2d_widget.hit_test(local_pos.x(), local_pos.y())

@@ -57,6 +57,7 @@ class ChatTriggerButton(QWidget):
         if obj is self._pet:
             if event.type() == QEvent.Type.Show:
                 self.show()
+                self.raise_()
             elif event.type() == QEvent.Type.Hide:
                 self.hide()
         return super().eventFilter(obj, event)
@@ -89,6 +90,7 @@ class ChatTriggerButton(QWidget):
     # ------------------------------------------------------------------
 
     def enterEvent(self, event: Any) -> None:
+        self.raise_()
         self._set_expanded(True)
 
     def leaveEvent(self, event: Any) -> None:
