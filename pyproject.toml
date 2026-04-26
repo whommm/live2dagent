@@ -3,14 +3,14 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aipet"
+name = "live2dagent"
 version = "2.0.0a1"
-description = "AIPet v2.0 - Your personal AI desktop companion with Live2D"
+description = "live2dagent - Your personal AI desktop companion with Live2D"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 authors = [
-    {name = "AIPet Team"},
+    {name = "live2dagent Team"},
 ]
 keywords = ["ai", "desktop-pet", "live2d", "companion"]
 classifiers = [
@@ -63,17 +63,17 @@ gui-dev = [
     "pytest-qt>=4.2",
 ]
 all = [
-    "aipet[gui,ai,audio,asr,dev]",
+    "live2dagent[gui,ai,audio,asr,dev]",
 ]
 
 [project.scripts]
-aipet-gateway = "aipet.gateway.server:main"
-aipet-frontend = "aipet.frontend.app:main"
-aipet = "aipet.launcher:main"
+live2dagent-gateway = "aipet.gateway.server:main"
+live2dagent-frontend = "aipet.frontend.app:main"
+live2dagent = "aipet.launcher:main"
 
 [project.urls]
-Homepage = "https://github.com/aipet/aipet"
-Documentation = "https://github.com/aipet/aipet/blob/main/docs/ARCHITECTURE.md"
+Homepage = "https://github.com/whommm/live2dagent"
+Documentation = "https://github.com/whommm/live2dagent/blob/main/README.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -119,7 +119,4 @@ module = [
 ]
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
+

@@ -1,4 +1,4 @@
-"""Structured logging configuration for AIPet."""
+"""Structured logging configuration for live2dagent."""
 
 from __future__ import annotations
 

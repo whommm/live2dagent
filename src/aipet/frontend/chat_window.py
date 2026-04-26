@@ -773,7 +773,7 @@ class _TitleBar(QWidget):
         layout.setContentsMargins(14, 0, 10, 0)
         layout.setSpacing(8)
 
-        self.title_label = QLabel("AIPet")
+        self.title_label = QLabel("live2dagent")
         self.title_label.setStyleSheet(
             f"color: {MaterialTheme.on_surface}; font-size: 13px; font-weight: 700; border: none;"
         )
@@ -908,7 +908,7 @@ class ChatWindow(QWidget):
         fire_and_forget(self._load_sessions())
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle("Chat with AIPet")
+        self.setWindowTitle("Chat with live2dagent")
         self.resize(980, 740)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setStyleSheet(f"background-color: {MaterialTheme.surface};")

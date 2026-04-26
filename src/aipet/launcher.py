@@ -37,7 +37,7 @@ def _start_frontend() -> int:
 
 
 def main() -> int:
-    """Launch AIPet in production mode."""
+    """Launch live2dagent in production mode."""
     gateway_proc = None
     try:
         if not _is_gateway_running():

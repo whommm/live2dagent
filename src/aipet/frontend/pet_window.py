@@ -168,7 +168,7 @@ class PetWindow(QWidget):
     def __init__(self, client: GatewayClient, parent: Any = None) -> None:
         super().__init__(parent)
         self.client = client
-        self.setWindowTitle("AIPet")
+        self.setWindowTitle("live2dagent")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -328,14 +328,14 @@ class PetWindow(QWidget):
         show_hide_action.triggered.connect(self._toggle_visibility)
         self.tray_menu.addAction(show_hide_action)
 
-        quit_action = QAction("退出 AIPet", self)
+        quit_action = QAction("退出 live2dagent", self)
         quit_action.triggered.connect(self._quit)
         self.tray_menu.addAction(quit_action)
 
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(_create_paw_icon())
         self.tray_icon.setContextMenu(self.tray_menu)
-        self.tray_icon.setToolTip("AIPet v2.0")
+        self.tray_icon.setToolTip("live2dagent v2.0")
         self.tray_icon.activated.connect(self._on_tray_activated)
         self.tray_icon.show()
 
@@ -544,7 +544,7 @@ class PetWindow(QWidget):
             }
         )
         if is_error and hasattr(self, "tray_icon") and self.tray_icon.isVisible():
-            self.tray_icon.showMessage("AIPet", text, QSystemTrayIcon.MessageIcon.Warning, 6000)
+            self.tray_icon.showMessage("live2dagent", text, QSystemTrayIcon.MessageIcon.Warning, 6000)
 
     def _start_lipsync_animation(self, lipsync_data: list[Any]) -> None:
         """Drive lip-sync using a pre-computed volume envelope."""

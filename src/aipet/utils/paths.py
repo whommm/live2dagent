@@ -1,6 +1,6 @@
 """Path resolution utilities.
 
-All paths in AIPet are resolved dynamically. There are NO hardcoded absolute paths.
+All paths in live2dagent are resolved dynamically. There are NO hardcoded absolute paths.
 """
 
 import sys
@@ -21,7 +21,7 @@ def get_project_root() -> Path:
 
 
 def get_user_data_dir() -> Path:
-    """Return the AIPet data directory inside the project root.
+    """Return the live2dagent data directory inside the project root.
 
     All runtime data (sessions, skills, models, cache, logs) lives here
     so everything is self-contained within the project.
@@ -30,7 +30,7 @@ def get_user_data_dir() -> Path:
 
 
 def get_config_dir() -> Path:
-    """Return the AIPet config directory inside the project root.
+    """Return the live2dagent config directory inside the project root.
 
     This keeps configuration files (gateway.toml, soul.md, memory.md, providers.toml)
     alongside the source code for easy editing and version control.

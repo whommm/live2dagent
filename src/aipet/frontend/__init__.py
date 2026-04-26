@@ -1,1 +1,1 @@
-"""AIPet PySide6 Live2D Frontend."""
+"""live2dagent PySide6 Live2D Frontend."""

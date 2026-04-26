@@ -67,6 +67,13 @@ config/ai_tools.toml
 # Third-party reference projects (not for distribution)
 参考项目/
 
+# Development documents and tests (not for distribution)
+docs/
+tests/
+AIPet_v2_Architecture_Design.md
+test_*.py
+_test.toml
+
 # PyInstaller
 *.spec
 *.manifest

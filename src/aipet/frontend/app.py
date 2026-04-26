@@ -21,7 +21,7 @@ def main() -> int:
     setup_exception_logging("frontend")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("AIPet")
+    app.setApplicationName("live2dagent")
     app.setApplicationVersion("2.0.0a1")
     app.setQuitOnLastWindowClosed(False)
 
@@ -53,7 +53,7 @@ def main() -> int:
         try:
             await client.connect()
             if not client.connected:
-                pet.setWindowTitle("AIPet - Connecting")
+                pet.setWindowTitle("live2dagent - Connecting")
                 pet.show_status_message(
                     "正在连接 Gateway，连接成功后会自动恢复。",
                     is_error=True,
@@ -83,7 +83,7 @@ def main() -> int:
             logger = logging.getLogger("aipet.frontend.app")
             logger.error("Could not connect to Gateway at %s: %s", client.uri, exc)
             # Show non-blocking error message via the pet bubble and window title.
-            pet.setWindowTitle(f"AIPet — Connection Failed ({exc})")
+            pet.setWindowTitle(f"live2dagent — Connection Failed ({exc})")
             pet.show_status_message(
                 f"无法连接 Gateway：{exc}\n请确认后台服务已启动，或稍后自动重连。",
                 is_error=True,

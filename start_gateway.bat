@@ -7,13 +7,13 @@ if exist "%~dp0.venv\Scripts\python.exe" (
     set PYTHON="%~dp0.venv\Scripts\python.exe"
 )
 
-echo [AIPet Gateway] Starting backend server...
+echo [live2dagent Gateway] Starting backend server...
 echo Using Python: %PYTHON%
 echo.
 
 %PYTHON% -m aipet gateway
 if %errorlevel% neq 0 (
     echo.
-    echo [AIPet Gateway] Server exited with error code %errorlevel%.
+    echo [live2dagent Gateway] Server exited with error code %errorlevel%.
     pause
 )

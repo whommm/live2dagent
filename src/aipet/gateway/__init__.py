@@ -1,1 +1,1 @@
-"""AIPet Gateway - the core brain running as a local WebSocket service."""
+"""live2dagent Gateway - the core brain running as a local WebSocket service."""

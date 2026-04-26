@@ -2,7 +2,7 @@
 chcp 65001 > nul
 cd /d "%~dp0"
 
-echo [AIPet] Launching AIPet (Launcher mode)...
+echo [live2dagent] Launching live2dagent (Launcher mode)...
 echo.
 echo This will automatically start Gateway and then Frontend.
 echo.
@@ -16,6 +16,6 @@ if exist "%~dp0.venv\Scripts\python.exe" (
 
 if %errorlevel% neq 0 (
     echo.
-    echo [AIPet] Launcher exited with error code %errorlevel%.
+    echo [live2dagent] Launcher exited with error code %errorlevel%.
     pause
 )

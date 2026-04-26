@@ -1,4 +1,4 @@
-"""Entry point for AIPet.
+"""Entry point for live2dagent.
 
 Usage:
     python -m aipet                  # Launch production mode (launcher)

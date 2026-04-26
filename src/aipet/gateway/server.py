@@ -41,7 +41,7 @@ _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar
 
 
 class Gateway:
-    """AIPet Gateway WebSocket server."""
+    """live2dagent Gateway WebSocket server."""
 
     def __init__(self, config: GatewayConfig | None = None) -> None:
         self._logger = structlog.get_logger("gateway")

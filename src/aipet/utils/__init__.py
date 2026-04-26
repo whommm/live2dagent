@@ -1,1 +1,1 @@
-"""Shared utilities for AIPet."""
+"""Shared utilities for live2dagent."""

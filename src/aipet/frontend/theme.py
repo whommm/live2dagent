@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 
 
 class MaterialTheme:
-    """Soft desktop theme tokens for the AIPet QWidget frontend."""
+    """Soft desktop theme tokens for the live2dagent QWidget frontend."""
 
     # Primary
     primary = "#4F67A5"

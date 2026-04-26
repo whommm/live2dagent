@@ -39,7 +39,7 @@ def fire_and_forget(coro: Any) -> None:
 
 
 class GatewayClient:
-    """Async WebSocket client that connects to the AIPet Gateway.
+    """Async WebSocket client that connects to the live2dagent Gateway.
 
     Automatically reconnects with exponential back-off when the connection
     drops.  A heartbeat ping is sent every 15 seconds to detect half-open

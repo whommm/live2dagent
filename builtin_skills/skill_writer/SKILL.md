@@ -1,7 +1,7 @@
 # Skill Writer
 
 ## Description
-Create, update, install, and delete AIPet skills programmatically. A skill is a self-contained plugin consisting of a `SKILL.md` descriptor and a Python `__init__.py` module that exposes a `tools` dictionary.
+Create, update, install, and delete live2dagent skills programmatically. A skill is a self-contained plugin consisting of a `SKILL.md` descriptor and a Python `__init__.py` module that exposes a `tools` dictionary.
 
 ## Brief
 当用户要求"帮我写一个能...的 skill"、"添加一个新功能"、"写一个工具"时调用。

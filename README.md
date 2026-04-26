@@ -1,8 +1,8 @@
-# AIPet v2.0
+# live2dagent
 
 > 🐾 **你的个人 AI 桌面伴侣 —— 基于 Live2D 的透明桌宠 + Gateway 智能中枢。**
 
-AIPet v2.0 是一个完整的 AI 桌面宠物系统，采用 **Gateway + Client** 架构。Gateway 作为本地 WebSocket 智能中枢运行 AI 推理、工具调用和会话管理；Frontend 是一个基于 PySide6 + OpenGL 的透明 Live2D 桌面宠物，支持唇形同步、鼠标追踪、自动表演和丰富的可视化交互。
+live2dagent 是一个完整的 AI 桌面宠物系统，采用 **Gateway + Client** 架构。Gateway 作为本地 WebSocket 智能中枢运行 AI 推理、工具调用和会话管理；Frontend 是一个基于 PySide6 + OpenGL 的透明 Live2D 桌面宠物，支持唇形同步、鼠标追踪、自动表演和丰富的可视化交互。
 
 ## ✨ 核心功能
 
@@ -101,8 +101,6 @@ AI 可通过技能在宠物旁边推送富视觉内容：
 │  └──────────┘  └────────────────────┘  └─────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
-
-详细设计文档见 [AIPet_v2_Architecture_Design.md](AIPet_v2_Architecture_Design.md)。
 
 ---
 
@@ -403,7 +401,7 @@ live2dagent/
 ├── start_all.bat               # 一键启动
 ├── start_gateway.bat           # 仅启动 Gateway
 ├── start_frontend.bat          # 仅启动 Frontend
-└── AIPet_v2_Architecture_Design.md  # 架构设计文档
+
 ```
 
 ---
