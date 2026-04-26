@@ -7,7 +7,7 @@ from typing import Any
 
 import anthropic
 
-from aipet.gateway.providers.ai import Chunk, Message
+from aipet.gateway.providers.ai import Chunk, Message, ProviderToolCapabilities
 
 
 class AnthropicProvider:
@@ -37,6 +37,15 @@ class AnthropicProvider:
     @property
     def supports_tool_calling(self) -> bool:
         return True
+
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        return ProviderToolCapabilities(
+            supports_native_tool_calling=False,
+            supports_streaming_tool_calls=False,
+            supports_tool_result_roundtrip=False,
+            supports_structured_json=False,
+        )
 
     def _to_anthropic_messages(
         self, messages: list[Message]

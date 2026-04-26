@@ -14,11 +14,12 @@ from markdown_it import MarkdownIt
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QMouseEvent, QTextDocument
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QTimer, Signal, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QMouseEvent, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -122,7 +123,8 @@ class MessageBubble(QWidget):
             bubble_layout.addWidget(self.text_display)
         elif self.role == "assistant" or self._has_markdown(content):
             browser = QTextBrowser()
-            browser.setOpenExternalLinks(True)
+            browser.setOpenExternalLinks(False)
+            browser.anchorClicked.connect(self._on_anchor_clicked)
             browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             # Ensure viewport is transparent so bubble_container background shows through
@@ -380,10 +382,25 @@ class MessageBubble(QWidget):
         )
         return html
 
+    @staticmethod
+    def _wrap_images(html: str) -> str:
+        """Wrap <img> tags in <a> so they are clickable for preview."""
+
+        def repl(m: re.Match) -> str:
+            full = m.group(0)
+            src_match = re.search(r'src="([^"]+)"', full)
+            if src_match:
+                src = src_match.group(1)
+                return f'<a href="{src}">{full}</a>'
+            return full
+
+        return re.sub(r'<img[^>]+>', repl, html)
+
     @classmethod
     def _markdown_to_html(cls, text: str, text_color: str | None = None) -> str:
         html = cls._md.render(text)
         html = cls._highlight_code_blocks(html)
+        html = cls._wrap_images(html)
         fg = text_color or MaterialTheme.on_surface
         styles = f"""
         <html><head><style>
@@ -428,6 +445,7 @@ class MessageBubble(QWidget):
         table {{ border-collapse: collapse; margin: 6px 0; }}
         th, td {{ border: 1px solid {MaterialTheme.outline_variant}; padding: 4px 8px; }}
         th {{ background-color: {MaterialTheme.surface_variant}; }}
+        img {{ max-width: 100%; height: auto; border-radius: 8px; margin: 4px 0; cursor: pointer; }}
         </style></head><body>{html}</body></html>
         """
         return styles
@@ -530,6 +548,13 @@ class MessageBubble(QWidget):
         if isinstance(self.text_display, QTextBrowser):
             return str(self.text_display.toPlainText()).strip()
         return str(self.text_display.text()).strip()
+
+    def _on_anchor_clicked(self, url: QUrl) -> None:
+        """Open a preview dialog when an image link is clicked."""
+        path = url.toLocalFile()
+        if path and Path(path).exists():
+            dialog = ImagePreviewDialog(path, self)
+            dialog.exec()
 
 
 class ToolCard(QWidget):
@@ -711,6 +736,46 @@ class ToolCard(QWidget):
         except Exception:
             return str(d)
 
+    @staticmethod
+    def _parse_result_payload(result: str) -> tuple[bool, str]:
+        import json
+
+        text = result.strip()
+        if not text:
+            return False, ""
+
+        try:
+            payload = json.loads(text)
+        except Exception:
+            has_error = (
+                "exception" in text.lower()
+                or text.startswith("Error")
+                or text.startswith("错误：")
+            )
+            return has_error, text
+
+        if not isinstance(payload, dict) or "ok" not in payload:
+            return False, ToolCard._fmt_dict_pretty(payload) if isinstance(payload, dict) else text
+
+        has_error = not bool(payload.get("ok")) or payload.get("error") is not None
+        if has_error:
+            error = payload.get("error")
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("code") or text
+                return True, str(message)
+            if error:
+                return True, str(error)
+            return True, text
+
+        data = payload.get("data")
+        if isinstance(data, str):
+            return False, data
+        if isinstance(data, dict):
+            return False, ToolCard._fmt_dict_pretty(data)
+        if data is None:
+            return False, ""
+        return False, str(data)
+
     def _toggle_expand(self) -> None:
         self._is_expanded = not self._is_expanded
         self.detail_widget.setVisible(self._is_expanded)
@@ -725,9 +790,7 @@ class ToolCard(QWidget):
         )
 
     def set_done(self, result: str, duration_ms: int = 0) -> None:
-        has_error = (
-            "error" in result.lower() or "exception" in result.lower() or result.startswith("Error")
-        )
+        has_error, display_text = self._parse_result_payload(result)
         if has_error:
             self.icon_label.setText("警告")
             self.status_label.setText(
@@ -739,7 +802,7 @@ class ToolCard(QWidget):
             self.status_label.setText("● 完成" if not duration_ms else f"● 完成 · {duration_ms}ms")
             self._set_status_color("#4CAF50")
 
-        self.result_text.setPlainText(result)
+        self.result_text.setPlainText(display_text)
         self.result_block.show()
         # Auto-expand on error
         if has_error and not self._is_expanded:
@@ -1208,6 +1271,8 @@ class ChatWindow(QWidget):
         self.client.on("tool.start", self._on_tool_start)
         self.client.on("tool.result", self._on_tool_result)
         self.client.on("tool.error", self._on_tool_error)
+        self.client.on("image.job.status", self._on_image_job_status)
+        self.client.on("image.job.progress", self._on_image_job_progress)
 
     def _unwire_events(self) -> None:
         self.client.off("chat.message", self._on_chat_message)
@@ -1220,6 +1285,8 @@ class ChatWindow(QWidget):
         self.client.off("tool.start", self._on_tool_start)
         self.client.off("tool.result", self._on_tool_result)
         self.client.off("tool.error", self._on_tool_error)
+        self.client.off("image.job.status", self._on_image_job_status)
+        self.client.off("image.job.progress", self._on_image_job_progress)
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
@@ -2228,6 +2295,26 @@ class ChatWindow(QWidget):
                 bubble.show_tool_status(f"{name} 失败")
                 break
 
+    def _on_image_job_status(self, payload: dict[str, Any]) -> None:
+        if payload.get("session_id") != self._current_session_id:
+            return
+        job_id = payload.get("job_id", "")
+        status = payload.get("status", "")
+        workflow = payload.get("workflow", "")
+        error = payload.get("error", "")
+        if status == "failed":
+            self.show_system_message(
+                f"图片任务失败：{workflow}（{job_id}）\n{error or '未知错误'}",
+                is_error=True,
+            )
+
+    def _on_image_job_progress(self, payload: dict[str, Any]) -> None:
+        if payload.get("session_id") != self._current_session_id:
+            return
+        # Progress updates are already reflected by the tool card and the final
+        # assistant message/canvas. Avoid flooding the chat with transient job events.
+        return
+
     def _add_assistant_bubble(self, text: str, msg_id: str = "", timestamp: str = "") -> None:
         ts = timestamp or datetime.now().strftime("%H:%M")
         if msg_id and msg_id in self._message_bubbles:
@@ -2273,3 +2360,50 @@ class ChatWindow(QWidget):
         if self._typing_indicator is not None:
             self._typing_indicator.deleteLater()
             self._typing_indicator = None
+
+
+class ImagePreviewDialog(QDialog):
+    """A frameless dialog that displays an image at up to 85% screen size."""
+
+    def __init__(self, image_path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setStyleSheet(f"background-color: {MaterialTheme.surface};")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            err = QLabel("无法加载图片")
+            err.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(err)
+            return
+
+        screen = QApplication.primaryScreen().geometry()
+        max_w = int(screen.width() * 0.85)
+        max_h = int(screen.height() * 0.85)
+        scaled = pixmap.scaled(
+            max_w,
+            max_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        label = QLabel()
+        label.setPixmap(scaled)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+
+        hint = QLabel("点击任意处关闭")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet(
+            f"color: {MaterialTheme.outline}; font-size: 12px; margin-top: 12px;"
+        )
+        layout.addWidget(hint)
+
+        self.setFixedSize(scaled.width() + 40, scaled.height() + 80)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.close()

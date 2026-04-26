@@ -45,6 +45,7 @@ class ChatRepository:
                     content TEXT,
                     tool_calls TEXT,
                     tool_call_id TEXT,
+                    reasoning_content TEXT,
                     attachments TEXT,
                     model TEXT,
                     tokens_used INTEGER,
@@ -56,6 +57,8 @@ class ChatRepository:
             # Migrate existing databases that lack the source column
             with contextlib.suppress(aiosqlite.OperationalError):
                 await db.execute("ALTER TABLE messages ADD COLUMN source TEXT")
+            with contextlib.suppress(aiosqlite.OperationalError):
+                await db.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
             await db.commit()
 
     async def save_session(self, session: Session) -> None:
@@ -108,10 +111,10 @@ class ChatRepository:
             await db.execute(
                 """
                 INSERT INTO messages (
-                    id, session_id, role, content, tool_calls, tool_call_id,
+                    id, session_id, role, content, tool_calls, tool_call_id, reasoning_content,
                     attachments, model, tokens_used, created_at, source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -120,6 +123,7 @@ class ChatRepository:
                     message.content,
                     json.dumps(message.tool_calls) if message.tool_calls else None,
                     message.tool_call_id,
+                    message.reasoning_content,
                     json.dumps(message.attachments) if message.attachments else None,
                     message.model,
                     message.tokens_used,

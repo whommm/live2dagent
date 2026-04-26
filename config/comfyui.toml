@@ -1,0 +1,5 @@
+# ComfyUI skill configuration
+# If ComfyUI Desktop is not listening on 127.0.0.1:8188,
+# update the host below to match your setup.
+
+host = "http://127.0.0.1:8000"

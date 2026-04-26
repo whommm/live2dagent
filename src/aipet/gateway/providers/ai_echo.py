@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from aipet.gateway.providers.ai import Chunk, Message, Tool
+from aipet.gateway.providers.ai import Chunk, Message, ProviderToolCapabilities, Tool
 
 
 class EchoProvider:
@@ -24,6 +24,10 @@ class EchoProvider:
     @property
     def supports_tool_calling(self) -> bool:
         return False
+
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        return ProviderToolCapabilities()
 
     async def chat(
         self,

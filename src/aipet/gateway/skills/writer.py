@@ -285,7 +285,10 @@ def save_draft_skill(skill_id: str, skill_md: str, tools_code: str) -> str:
     draft.mkdir(parents=True, exist_ok=True)
     (draft / "SKILL.md").write_text(skill_md, encoding="utf-8")
     (draft / "__init__.py").write_text(tools_code, encoding="utf-8")
-    return f"Draft skill '{skill_id}' saved. Use skill_tester:test_skill to validate."
+    return (
+        f"Draft skill '{skill_id}' saved. Use skill_tester:test_skill to validate. "
+        "Follow docs/skill-authoring-guide.md for structure, naming, and error-handling rules."
+    )
 
 
 def install_draft_skill(skill_id: str) -> str:

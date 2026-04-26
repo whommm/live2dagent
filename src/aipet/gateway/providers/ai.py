@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -35,6 +36,16 @@ class Tool(BaseModel):
     function: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ProviderToolCapabilities:
+    """Explicit tool-calling capabilities for a provider implementation."""
+
+    supports_native_tool_calling: bool = False
+    supports_streaming_tool_calls: bool = False
+    supports_tool_result_roundtrip: bool = False
+    supports_structured_json: bool = False
+
+
 class Usage(BaseModel):
     """Token usage information."""
 
@@ -63,6 +74,11 @@ class AIProvider(Protocol):
     @property
     def supports_tool_calling(self) -> bool:
         """Whether this provider supports function calling."""
+        ...
+
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        """Detailed tool-calling capability flags for routing decisions."""
         ...
 
     def chat(

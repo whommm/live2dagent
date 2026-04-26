@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from aipet.gateway.skills.router import ToolExecutionResult
 from aipet.utils.paths import get_user_data_dir
 
 _logger = logging.getLogger("aipet.gateway.scheduler")
@@ -131,8 +132,11 @@ class TaskScheduler:
                 result_text = str(result)[:500]
             else:
                 full_name = f"{task.skill_id}:{task.tool_name}"
-                result = await gateway.tool_router.call(full_name, task.arguments)
-                result_text = str(result)[:500]
+                result = await gateway.tool_router.call(full_name, task.arguments, session_id="main")
+                if isinstance(result, ToolExecutionResult):
+                    result_text = result.to_model_text()[:500]
+                else:
+                    result_text = str(result)[:500]
         except Exception as exc:
             result_text = f"Error: {exc}"
 

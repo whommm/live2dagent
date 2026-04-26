@@ -7,7 +7,7 @@ from typing import Any
 
 from google import genai
 
-from aipet.gateway.providers.ai import Chunk, Message, Tool
+from aipet.gateway.providers.ai import Chunk, Message, ProviderToolCapabilities, Tool
 
 
 class GeminiProvider:
@@ -29,6 +29,15 @@ class GeminiProvider:
     @property
     def supports_tool_calling(self) -> bool:
         return True
+
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        return ProviderToolCapabilities(
+            supports_native_tool_calling=True,
+            supports_streaming_tool_calls=True,
+            supports_tool_result_roundtrip=False,
+            supports_structured_json=False,
+        )
 
     def _to_contents(self, messages: list[Message]) -> list[Any]:
         """Convert internal Message list to google-genai contents format."""

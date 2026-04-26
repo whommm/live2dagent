@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import json as _json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from aipet.gateway.providers.ai import Chunk, Message, Tool
+from aipet.gateway.providers.ai import Chunk, Message, ProviderToolCapabilities, Tool
 
 _logger = logging.getLogger("aipet.gateway.providers.ai_openai")
+_SAFE_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class OpenAIProvider:
@@ -47,6 +50,22 @@ class OpenAIProvider:
     def supports_tool_calling(self) -> bool:
         return True
 
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        return ProviderToolCapabilities(
+            supports_native_tool_calling=True,
+            supports_streaming_tool_calls=True,
+            supports_tool_result_roundtrip=True,
+            supports_structured_json=True,
+        )
+
+    @staticmethod
+    def _alias_tool_name(name: str) -> str:
+        if _SAFE_TOOL_NAME_RE.fullmatch(name):
+            return name
+        encoded = base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"tool_{encoded}"
+
     def _build_payload(
         self,
         messages: list[Message],
@@ -55,7 +74,14 @@ class OpenAIProvider:
         max_tokens: int | None,
         stream: bool = True,
         response_format: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        alias_to_original: dict[str, str] = {}
+
+        def alias_name(name: str) -> str:
+            aliased = self._alias_tool_name(name)
+            alias_to_original[aliased] = name
+            return aliased
+
         openai_messages: list[dict[str, Any]] = []
         for m in messages:
             msg: dict[str, Any] = {"role": m.role, "content": m.content or ""}
@@ -75,7 +101,10 @@ class OpenAIProvider:
                             {
                                 "id": tc.get("id", tc.get("name", f"call_{uuid.uuid4().hex}")),
                                 "type": "function",
-                                "function": {"name": tc.get("name", ""), "arguments": args},
+                                "function": {
+                                    "name": alias_name(tc.get("name", "")),
+                                    "arguments": args,
+                                },
                             }
                         )
                 msg["tool_calls"] = formatted_calls
@@ -104,7 +133,14 @@ class OpenAIProvider:
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if tools:
-            payload["tools"] = [t.model_dump() for t in tools]
+            aliased_tools = []
+            for t in tools:
+                tool_payload = t.model_dump()
+                function_payload = dict(tool_payload.get("function", {}))
+                function_payload["name"] = alias_name(function_payload.get("name", ""))
+                tool_payload["function"] = function_payload
+                aliased_tools.append(tool_payload)
+            payload["tools"] = aliased_tools
         if response_format:
             payload["response_format"] = response_format
         payload.update(self._extra_params)
@@ -118,7 +154,7 @@ class OpenAIProvider:
                 )
             elif om.get("role") == "tool":
                 _logger.debug("Payload tool[%d] tool_call_id: %s", idx, om.get("tool_call_id"))
-        return payload
+        return payload, alias_to_original
 
     async def complete_json(
         self,
@@ -152,7 +188,7 @@ class OpenAIProvider:
 
         last_error: Exception | None = None
         for response_format in response_formats:
-            payload = self._build_payload(
+            payload, _ = self._build_payload(
                 messages,
                 tools=None,
                 temperature=temperature,
@@ -190,7 +226,9 @@ class OpenAIProvider:
         for attempt in range(3):
             use_tools = tools if attempt == 0 else None
             use_temp = temperature if attempt < 2 else None
-            payload = self._build_payload(messages, use_tools, use_temp, max_tokens)
+            payload, alias_to_original = self._build_payload(
+                messages, use_tools, use_temp, max_tokens
+            )
 
             try:
                 async with self._client.stream(
@@ -278,7 +316,9 @@ class OpenAIProvider:
                                     parsed_calls.append(
                                         {
                                             "id": tc.get("id", ""),
-                                            "name": tc.get("name", ""),
+                                            "name": alias_to_original.get(
+                                                tc.get("name", ""), tc.get("name", "")
+                                            ),
                                             "arguments": args,
                                         }
                                     )

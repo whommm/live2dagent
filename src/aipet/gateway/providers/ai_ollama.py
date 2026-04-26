@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from aipet.gateway.providers.ai import Chunk, Message
+from aipet.gateway.providers.ai import Chunk, Message, ProviderToolCapabilities
 
 
 class OllamaProvider:
@@ -29,6 +29,10 @@ class OllamaProvider:
     @property
     def supports_tool_calling(self) -> bool:
         return False
+
+    @property
+    def tool_capabilities(self) -> ProviderToolCapabilities:
+        return ProviderToolCapabilities()
 
     async def chat(
         self,

@@ -57,7 +57,8 @@ class ToolDecider:
             "Rules:\n"
             '- Casual chat, greetings, and emotional conversation => "direct".\n'
             '- Requests to fetch current information, inspect files, schedule tasks, '
-            'calculate, or operate the desktop/app => "tool".\n'
+            'calculate, operate the desktop/app, generate images, draw pictures, '
+            'paint, or create visual art => "tool".\n'
             "- Only select tool names from the available tool list.\n"
             '- Fill selected_tools only when action is "tool"; select at most 3.\n'
         )

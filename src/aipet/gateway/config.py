@@ -51,7 +51,6 @@ class GatewayConfig(BaseSettings):
         default="direct_schema"
     )
     phase1_max_tokens: int = Field(default=128)
-    phase1_max_candidate_tools: int = Field(default=8)
     phase1_direct_confidence_threshold: float = Field(default=0.55)
     max_tool_loops: int = Field(default=5)
     enable_streaming_guard: bool = Field(default=True)
