@@ -574,8 +574,8 @@ class Gateway:
         filtered: list[Any] = []
         skip_orphan_tool = False
         for msg in messages:
-            if msg.role == "assistant" and (
-                msg.tool_calls or (msg.reasoning_content is None and not (msg.content or "").strip())
+            if msg.role == "assistant" and msg.reasoning_content is None and (
+                msg.tool_calls or not (msg.content or "").strip()
             ):
                 skip_orphan_tool = bool(msg.tool_calls)
                 continue
